@@ -1834,18 +1834,7 @@ async function startDirectRendering() {
     });
 
     // 4. 로컬 서버 연결 확인
-    let isServerAvailable = false;
-    try {
-        const pingRes = await fetch('/api/ping', { method: 'GET', cache: 'no-store' });
-        if (pingRes.ok) {
-            const pingData = await pingRes.json();
-            if (pingData.status === 'ok') {
-                isServerAvailable = true;
-            }
-        }
-    } catch (e) {
-        isServerAvailable = false;
-    }
+    const isServerAvailable = await checkServerHealth();
 
     if (isServerAvailable) {
         // [모드 1] 로컬 서버를 통한 고속 FFmpeg 즉시 렌더링 실행
@@ -1854,6 +1843,18 @@ async function startDirectRendering() {
         // [모드 2] 브라우저 내장 클라이언트 사이드 즉시 렌더링 실행
         runBrowserClientRender();
     }
+}
+
+// 로컬 서버 가용 상태 확인 헬퍼
+async function checkServerHealth() {
+    try {
+        const pingRes = await fetch('/api/ping', { method: 'GET', cache: 'no-store' });
+        if (pingRes.ok) {
+            const pingData = await pingRes.json();
+            return pingData.status === 'ok';
+        }
+    } catch (e) {}
+    return false;
 }
 
 // 로컬 서버로 에셋 파일 자동 동기화 업로드
