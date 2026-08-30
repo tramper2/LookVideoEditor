@@ -359,11 +359,9 @@ const server = http.createServer((req, res) => {
             console.log(`[LookVideoEditor] 저장 폴더 열기 요청: ${fullPath}`);
 
             if (fs.existsSync(fullPath) && fs.statSync(fullPath).isFile()) {
-                exec(`explorer.exe /select,"${fullPath}"`, (err) => {
-                    if (err) exec(`explorer.exe "${outputDir}"`);
-                });
+                spawn('cmd.exe', ['/c', 'start', 'explorer.exe', `/select,"${fullPath}"`], { detached: true, stdio: 'ignore' }).unref();
             } else {
-                exec(`explorer.exe "${outputDir}"`);
+                spawn('cmd.exe', ['/c', 'start', 'explorer.exe', outputDir], { detached: true, stdio: 'ignore' }).unref();
             }
 
             res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -400,12 +398,8 @@ const server = http.createServer((req, res) => {
             console.log(`[LookVideoEditor] 결과 영상 재생 요청: ${fullPath}`);
 
             if (fullPath && fs.existsSync(fullPath)) {
-                // Windows PowerShell Start-Process 를 통해 기본 미디어 플레이어로 즉시 실행
-                exec(`powershell -Command "Start-Process '${fullPath.replace(/'/g, "''")}'"`, (err) => {
-                    if (err) {
-                        exec(`explorer.exe "${fullPath}"`);
-                    }
-                });
+                // Windows 기본 미디어 플레이어로 포그라운드 실행
+                spawn('cmd.exe', ['/c', 'start', '""', fullPath], { detached: true, stdio: 'ignore' }).unref();
                 res.writeHead(200, { 'Content-Type': 'application/json' });
                 res.end(JSON.stringify({ status: 'opened', file: fullPath }));
             } else {

@@ -530,8 +530,12 @@
                         <i class="fa-solid fa-circle-check"></i>
                         <span>렌더링이 성공적으로 완료되었습니다!</span>
                     </div>
+                    <!-- 결과 영상 즉시 확인 비디오 플레이어 -->
+                    <div class="rendered-video-preview-wrapper">
+                        <video id="rendered-result-video" class="rendered-result-video" controls preload="auto" playsinline></video>
+                    </div>
                     <div class="output-file-info">
-                        <span class="output-file-label">저장 파일:</span>
+                        <span class="output-file-label"><i class="fa-solid fa-location-dot"></i> 저장 위치:</span>
                         <span class="output-file-name" id="render-output-filename">output/rendered_video.mp4</span>
                     </div>
                 </div>

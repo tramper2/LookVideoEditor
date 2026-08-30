@@ -2230,6 +2230,19 @@ function updateRenderModalUI(data) {
         
         DOM.btnCancelRender.classList.add('hide');
         DOM.btnRenderDone.classList.remove('hide');
+
+        // 결과 영상 즉시 인앱 플레이어에 로드
+        const videoEl = document.getElementById('rendered-result-video');
+        if (videoEl) {
+            if (data.isBrowserBlob) {
+                videoEl.src = data.blobUrl;
+            } else {
+                const cleanPath = (data.outputFile || STATE.activeRenderOutput || '').replace(/\\/g, '/');
+                videoEl.src = (cleanPath.startsWith('/') ? cleanPath : `/${cleanPath}`) + `?t=${Date.now()}`;
+            }
+            videoEl.load();
+            videoEl.play().catch(() => {}); // 자동 재생 시도
+        }
         
         if (data.isBrowserBlob) {
             DOM.btnDownloadRenderedVideo.classList.remove('hide');
@@ -2273,9 +2286,20 @@ function openRenderModal() {
     DOM.btnOpenOutputFolder.classList.add('hide');
     DOM.btnDownloadRenderedVideo.classList.add('hide');
     DOM.btnRenderDone.classList.add('hide');
+
+    const videoEl = document.getElementById('rendered-result-video');
+    if (videoEl) {
+        videoEl.pause();
+        videoEl.removeAttribute('src');
+        videoEl.load();
+    }
 }
 
 function closeRenderModal() {
+    const videoEl = document.getElementById('rendered-result-video');
+    if (videoEl) {
+        videoEl.pause();
+    }
     DOM.renderModal.classList.remove('show');
     setTimeout(() => DOM.renderModal.classList.add('hide'), 250);
 }
@@ -2299,6 +2323,18 @@ async function cancelRendering() {
 }
 
 async function openRenderedVideoFile() {
+    // 1. 웹 브라우저 인앱 비디오 플레이어로 즉시 재생 및 전체화면 지원
+    const videoEl = document.getElementById('rendered-result-video');
+    if (videoEl) {
+        try {
+            videoEl.play();
+            if (videoEl.requestFullscreen) {
+                videoEl.requestFullscreen().catch(() => {});
+            }
+        } catch (e) {}
+    }
+
+    // 2. PC 로컬 비디오 플레이어 실행 요청
     try {
         const res = await fetch('/api/open-file', {
             method: 'POST',
@@ -2306,26 +2342,26 @@ async function openRenderedVideoFile() {
             body: JSON.stringify({ outputFile: STATE.activeRenderOutput })
         });
         if (!res.ok) {
-            // 브라우저 새 탭에서 즉시 비디오 스트리밍 재생
             const cleanPath = (STATE.activeRenderOutput || 'output/rendered_video.mp4').replace(/\\/g, '/');
             const fileUrl = cleanPath.startsWith('/') ? cleanPath : `/${cleanPath}`;
             window.open(fileUrl, '_blank');
         }
     } catch (e) {
         console.error("Open file error:", e);
-        const cleanPath = (STATE.activeRenderOutput || 'output/rendered_video.mp4').replace(/\\/g, '/');
-        const fileUrl = cleanPath.startsWith('/') ? cleanPath : `/${cleanPath}`;
-        window.open(fileUrl, '_blank');
     }
 }
 
 async function openOutputFolder() {
     try {
-        await fetch('/api/open-output', {
+        const res = await fetch('/api/open-output', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ outputFile: STATE.activeRenderOutput })
         });
+        if (res.ok) {
+            const data = await res.json();
+            console.log("[LookVideoEditor] 탐색기 열기 완료:", data.path);
+        }
     } catch (e) {
         console.error("Open output folder error:", e);
     }
