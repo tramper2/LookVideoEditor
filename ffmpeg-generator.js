@@ -123,6 +123,11 @@ function generateFFmpegCommand(projectState) {
                 else if (eff === 'reverse') vFilters.push("reverse");
                 else if (eff === 'zoom_in') vFilters.push("scale=2*iw:-1,crop=iw/2:ih/2");
                 else if (eff === 'zoom_out') vFilters.push("scale=0.5*iw:-1,pad=2*iw:2*ih:ow/4:oh/4:black");
+                else if (eff === 'fade_out') {
+                    const fadeDuration = (clip.fadeOutDuration !== undefined && clip.fadeOutDuration > 0) ? clip.fadeOutDuration : 0.5;
+                    const fadeStartTime = Math.max(0, clip.duration - fadeDuration);
+                    vFilters.push(`fade=t=out:st=${fadeStartTime.toFixed(2)}:d=${fadeDuration.toFixed(2)}`);
+                }
             });
         }
         
@@ -189,6 +194,11 @@ function generateFFmpegCommand(projectState) {
                 if (eff === 'grayscale') vFilters.push("hue=s=0");
                 else if (eff === 'sepia') vFilters.push("colorchannelmixer=.393:.769:.189:0:.349:.686:.168:0:.272:.534:.131");
                 else if (eff === 'reverse') vFilters.push("reverse");
+                else if (eff === 'fade_out') {
+                    const fadeDuration = (clip.fadeOutDuration !== undefined && clip.fadeOutDuration > 0) ? clip.fadeOutDuration : 0.5;
+                    const fadeStartTime = Math.max(0, clip.duration - fadeDuration);
+                    vFilters.push(`fade=t=out:st=${fadeStartTime.toFixed(2)}:d=${fadeDuration.toFixed(2)}:alpha=1`);
+                }
             });
         }
         

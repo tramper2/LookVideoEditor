@@ -114,6 +114,10 @@ const DOM = {
     propTextY: document.getElementById('prop-text-y'),
     btnApplyProperties: document.getElementById('btn-apply-properties'),
     propVideoEffectsList: document.getElementById('prop-video-effects-list'),
+    propEffectFadeOutGroup: document.getElementById('prop-effect-fade-out-group'),
+    propFadeOutDuration: document.getElementById('prop-fade-out-duration'),
+    propFadeOutLabel: document.getElementById('prop-fade-out-label'),
+    fadeOutPresets: document.querySelectorAll('.btn-fade-preset'),
     btnDeleteClip: document.getElementById('btn-delete-clip'),
     
     hiddenPlayersContainer: document.getElementById('hidden-players-container'),
@@ -305,6 +309,19 @@ function setupEventListeners() {
         isScrubbing = false;
     });
 
+    // 타임라인 트랙 빈 영역 클릭 및 스크러빙
+    const timelineLanes = [DOM.trackVideo1, DOM.trackVideo2, DOM.trackAudio, DOM.trackOverlay];
+    timelineLanes.forEach(lane => {
+        if (lane) {
+            lane.addEventListener('mousedown', (e) => {
+                if (e.target === lane) {
+                    isScrubbing = true;
+                    scrub(e);
+                }
+            });
+        }
+    });
+
     // 재생헤드 다이아몬드 핸들 드래그 연동
     let isDraggingPlayhead = false;
     const playheadHandle = document.querySelector('.playhead-handle');
@@ -332,7 +349,8 @@ function setupEventListeners() {
         DOM.propPipX, DOM.propPipY, DOM.propAudioVolume,
         DOM.propTextContent, DOM.propTextSize, DOM.propTextColor,
         DOM.propTextFont, DOM.propTextFontCustom,
-        DOM.propImgWidth, DOM.propImgHeight, DOM.propTextX, DOM.propTextY
+        DOM.propImgWidth, DOM.propImgHeight, DOM.propTextX, DOM.propTextY,
+        DOM.propFadeOutDuration
     ];
     propInputs.forEach(input => {
         if (input) {
@@ -349,6 +367,19 @@ function setupEventListeners() {
                     DOM.propSpeed.value = btn.dataset.speed;
                     DOM.propSpeed.dispatchEvent(new Event('input', { bubbles: true }));
                     DOM.propSpeed.dispatchEvent(new Event('change', { bubbles: true }));
+                }
+            });
+        });
+    }
+
+    // 페이드아웃 지속 시간 프리셋 버튼 이벤트 바인딩
+    if (DOM.fadeOutPresets) {
+        DOM.fadeOutPresets.forEach(btn => {
+            btn.addEventListener('click', () => {
+                if (DOM.propFadeOutDuration) {
+                    DOM.propFadeOutDuration.value = btn.dataset.fade;
+                    DOM.propFadeOutDuration.dispatchEvent(new Event('input', { bubbles: true }));
+                    DOM.propFadeOutDuration.dispatchEvent(new Event('change', { bubbles: true }));
                 }
             });
         });
@@ -414,10 +445,31 @@ function setupEventListeners() {
         DOM.timelineScrollContainer.addEventListener('scroll', drawRuler);
     }
 
-    // 효과 라이브러리 드래그 이벤트 설정
+    // 효과 라이브러리 드래그 및 클릭 이벤트 설정
     document.querySelectorAll('.effect-item').forEach(item => {
         item.addEventListener('dragstart', (e) => {
             e.dataTransfer.setData('text/effect', item.dataset.effect);
+        });
+        item.addEventListener('click', () => {
+            const effect = item.dataset.effect;
+            if (STATE.selectedClipId) {
+                const clip = STATE.clips.find(c => c.id === STATE.selectedClipId);
+                if (clip && (clip.track === 'video1' || clip.track === 'video2')) {
+                    if (!clip.effects) clip.effects = [];
+                    if (!clip.effects.includes(effect)) {
+                        clip.effects.push(effect);
+                        if (effect === 'fade_out' && clip.fadeOutDuration === undefined) {
+                            clip.fadeOutDuration = 0.5;
+                        }
+                    }
+                    selectClip(clip.id);
+                    renderPreview();
+                } else {
+                    alert("비디오 트랙의 클립을 선택한 후 효과를 클릭하거나, 원하는 클립 위로 효과를 드래그하세요.");
+                }
+            } else {
+                alert("효과를 적용할 타임라인 클립을 먼저 선택하거나, 클립 위로 직접 드래그하세요.");
+            }
         });
     });
 }
@@ -744,6 +796,9 @@ function updateTimelineClipsUI() {
                 if (!clip.effects) clip.effects = [];
                 if (!clip.effects.includes(effect)) {
                     clip.effects.push(effect);
+                    if (effect === 'fade_out' && clip.fadeOutDuration === undefined) {
+                        clip.fadeOutDuration = 0.5;
+                    }
                     selectClip(clip.id);
                     renderPreview();
                 }
@@ -814,12 +869,36 @@ function selectClip(clipId) {
 
         // 효과 배지 리스트
         DOM.propVideoEffectsList.innerHTML = '';
+        const hasFadeOut = clip.effects && clip.effects.includes('fade_out');
+        if (DOM.propEffectFadeOutGroup) {
+            if (hasFadeOut) {
+                DOM.propEffectFadeOutGroup.classList.remove('hide');
+                const fadeDur = clip.fadeOutDuration !== undefined ? clip.fadeOutDuration : 0.5;
+                if (DOM.propFadeOutDuration) DOM.propFadeOutDuration.value = fadeDur;
+                if (DOM.propFadeOutLabel) DOM.propFadeOutLabel.textContent = `${fadeDur.toFixed(1)}s`;
+            } else {
+                DOM.propEffectFadeOutGroup.classList.add('hide');
+            }
+        }
+
         if (clip.effects && clip.effects.length > 0) {
             clip.effects.forEach(eff => {
                 const badge = document.createElement('div');
                 badge.className = 'effect-badge';
+                if (eff === 'fade_out') {
+                    badge.classList.add('effect-badge-clickable');
+                    badge.title = '클릭하여 페이드아웃 설정 조절';
+                }
                 badge.innerHTML = `<span>${getEffectName(eff)}</span> <i class="fa-solid fa-xmark remove-effect" data-effect="${eff}"></i>`;
-                badge.querySelector('.remove-effect').addEventListener('click', () => {
+                badge.addEventListener('click', (e) => {
+                    if (e.target.classList.contains('remove-effect')) return;
+                    if (eff === 'fade_out' && DOM.propEffectFadeOutGroup) {
+                        DOM.propEffectFadeOutGroup.classList.remove('hide');
+                        if (DOM.propFadeOutDuration) DOM.propFadeOutDuration.focus();
+                    }
+                });
+                badge.querySelector('.remove-effect').addEventListener('click', (e) => {
+                    e.stopPropagation();
                     clip.effects = clip.effects.filter(e => e !== eff);
                     selectClip(clip.id);
                     renderPreview();
@@ -866,6 +945,7 @@ function getEffectName(effectKey) {
         case 'reverse': return '리버스';
         case 'zoom_in': return '줌인';
         case 'zoom_out': return '줌아웃';
+        case 'fade_out': return '페이드아웃';
         default: return effectKey;
     }
 }
@@ -923,6 +1003,12 @@ function updateSelectedClipFromInputs(e) {
         clip.rotation = parseInt(DOM.propRotation.value);
         clip.volume = parseFloat(DOM.propVolume.value);
         DOM.propVolumeLabel.textContent = Math.round(clip.volume * 100);
+        
+        if (DOM.propFadeOutDuration) {
+            const fadeDur = parseFloat(DOM.propFadeOutDuration.value) || 0.5;
+            clip.fadeOutDuration = fadeDur;
+            if (DOM.propFadeOutLabel) DOM.propFadeOutLabel.textContent = `${fadeDur.toFixed(1)}s`;
+        }
         
         if (clip.track === 'video2') {
             clip.pip = {
@@ -1116,8 +1202,7 @@ function setPlayheadTime(time) {
 }
 
 function updatePlayheadPosition() {
-    const leftOffset = 160; // 트랙 정보 열 너비
-    const x = leftOffset + STATE.playheadTime * STATE.timelineZoom;
+    const x = STATE.playheadTime * STATE.timelineZoom;
     DOM.playhead.style.transform = `translateX(${x}px)`;
 }
 
@@ -1534,6 +1619,16 @@ function drawVideoClip(clip, time, x, y, w, h) {
         });
     }
     ctx.filter = filterString.trim() || 'none';
+
+    // 페이드아웃 효과 계산
+    if (clip.effects && clip.effects.includes('fade_out')) {
+        const fadeDuration = (clip.fadeOutDuration !== undefined && clip.fadeOutDuration > 0) ? clip.fadeOutDuration : 0.5;
+        const fadeStartTime = clip.timelineStart + clip.duration - fadeDuration;
+        if (time >= fadeStartTime) {
+            const progress = Math.max(0, Math.min(1, (time - fadeStartTime) / fadeDuration));
+            ctx.globalAlpha = Math.max(0, 1.0 - progress);
+        }
+    }
 
     // 회전 렌더링
     const cx = x + w / 2;

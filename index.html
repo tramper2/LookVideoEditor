@@ -115,6 +115,10 @@
                                 <div class="effect-icon zoom-out-color"><i class="fa-solid fa-magnifying-glass-minus"></i></div>
                                 <span>클립 줌아웃</span>
                             </div>
+                            <div class="effect-item" draggable="true" data-effect="fade_out" title="클릭하여 선택된 클립에 적용하거나 클립 위로 드래그하세요">
+                                <div class="effect-icon fade-out-color"><i class="fa-solid fa-moon"></i></div>
+                                <span>페이드아웃</span>
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -244,6 +248,23 @@
                                 <label>적용된 비디오 효과</label>
                                 <div id="prop-video-effects-list" class="effects-list-container">
                                     <!-- 효과 배지들이 동적으로 추가됨 -->
+                                </div>
+                            </div>
+
+                            <!-- 페이드아웃 효과 전용 컨트롤 -->
+                            <div id="prop-effect-fade-out-group" class="property-group hide" style="background: rgba(255, 112, 67, 0.08); border: 1px solid rgba(255, 112, 67, 0.25); border-radius: 6px; padding: 8px 10px; margin-top: 6px;">
+                                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+                                    <label style="margin-bottom: 0; color: #ff7043; font-weight: 600; font-size: 0.75rem;"><i class="fa-solid fa-moon"></i> 페이드아웃 지속 시간</label>
+                                    <span id="prop-fade-out-label" style="font-size: 0.75rem; color: #ff7043; font-weight: 700; font-family: monospace;">0.5s</span>
+                                </div>
+                                <div class="speed-control-wrapper">
+                                    <input type="range" id="prop-fade-out-duration" min="0.1" max="5.0" step="0.1" value="0.5">
+                                    <div class="speed-presets">
+                                        <button type="button" class="btn-preset btn-fade-preset" data-fade="0.3">0.3s</button>
+                                        <button type="button" class="btn-preset btn-fade-preset" data-fade="0.5">0.5s</button>
+                                        <button type="button" class="btn-preset btn-fade-preset" data-fade="1.0">1.0s</button>
+                                        <button type="button" class="btn-preset btn-fade-preset" data-fade="2.0">2.0s</button>
+                                    </div>
                                 </div>
                             </div>
 

@@ -491,6 +491,7 @@ body {
 .reverse-color { background: rgba(240, 98, 146, 0.2); color: #f06292; }
 .zoom-in-color { background: rgba(77, 208, 225, 0.2); color: #4dd0e1; }
 .zoom-out-color { background: rgba(149, 117, 205, 0.2); color: #9575cd; }
+.fade-out-color { background: rgba(255, 112, 67, 0.2); color: #ff7043; }
 
 .effect-item span {
     font-size: 0.68rem;
@@ -839,6 +840,18 @@ body {
     display: flex;
     align-items: center;
     gap: 4px;
+}
+
+.effect-badge.effect-badge-clickable {
+    cursor: pointer;
+    transition: all 0.2s ease;
+}
+
+.effect-badge.effect-badge-clickable:hover {
+    border-color: #ff7043;
+    background: rgba(255, 112, 67, 0.25);
+    color: #ff7043;
+    transform: translateY(-1px);
 }
 
 .effect-badge .remove-effect {
