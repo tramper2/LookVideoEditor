@@ -115,7 +115,34 @@ const server = http.createServer((req, res) => {
         return;
     }
 
-    // 3. 렌더링 시작
+    // 3. 미디어 파일 자동 업로드 및 동기화 (/api/upload?filename=...)
+    if (pathname === '/api/upload' && req.method === 'POST') {
+        const rawFilename = parsedUrl.searchParams.get('filename') || `media_${Date.now()}`;
+        const filename = path.basename(decodeURIComponent(rawFilename));
+        const sourceDir = path.join(ROOT_DIR, 'source');
+        if (!fs.existsSync(sourceDir)) {
+            fs.mkdirSync(sourceDir, { recursive: true });
+        }
+        const targetPath = path.join(sourceDir, filename);
+        const fileStream = fs.createWriteStream(targetPath);
+
+        req.pipe(fileStream);
+
+        fileStream.on('finish', () => {
+            console.log(`[LookVideoEditor] 소스 파일 업로드 완료: ${targetPath}`);
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ success: true, localPath: targetPath, filename: filename }));
+        });
+
+        fileStream.on('error', (err) => {
+            console.error(`[LookVideoEditor] 소스 파일 업로드 실패:`, err);
+            res.writeHead(500, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: err.message }));
+        });
+        return;
+    }
+
+    // 4. 렌더링 시작
     if (pathname === '/api/render' && req.method === 'POST') {
         if (renderState.isRendering) {
             res.writeHead(400, { 'Content-Type': 'application/json' });

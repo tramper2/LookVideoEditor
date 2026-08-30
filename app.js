@@ -529,9 +529,11 @@ function handleMediaImport(files) {
                 localPath
             };
             STATE.assets.push(asset);
+            uploadAssetFileToServer(asset);
         } else {
             asset.url = url;
             asset.file = file;
+            uploadAssetFileToServer(asset);
         }
 
         // 숨김 플레이어 생성하여 메타데이터 및 프레임 버퍼 로드
@@ -1854,9 +1856,59 @@ async function startDirectRendering() {
     }
 }
 
-// [모드 1] 로컬 서버 FFmpeg 렌더링
-async function runLocalServerRender(renderParams) {
+// 로컬 서버로 에셋 파일 자동 동기화 업로드
+async function uploadAssetFileToServer(asset) {
+    if (!asset || !asset.file) return;
     try {
+        const res = await fetch(`/api/upload?filename=${encodeURIComponent(asset.name)}`, {
+            method: 'POST',
+            body: asset.file
+        });
+        if (res.ok) {
+            const data = await res.json();
+            if (data.localPath) {
+                asset.localPath = data.localPath;
+                STATE.clips.filter(c => c.assetId === asset.id).forEach(c => {
+                    c.localPath = data.localPath;
+                });
+                console.log(`[LookVideoEditor] 소스 파일 서버 동기화 완료: ${asset.name} -> ${data.localPath}`);
+            }
+        }
+    } catch (e) {
+        console.warn(`[LookVideoEditor] 소스 파일 업로드 건너뜀 (오프라인 또는 클라이언트 모드):`, e.message);
+    }
+}
+
+// 모든 프로젝트 에셋이 로컬 서버의 source/ 폴더에 동기화되었는지 확인
+async function ensureAssetsUploadedToLocalServer() {
+    const isServer = await checkServerHealth();
+    if (!isServer) return;
+    for (const asset of STATE.assets) {
+        if (asset.file) {
+            await uploadAssetFileToServer(asset);
+        }
+    }
+}
+
+// [모드 1] 로컬 서버 FFmpeg 렌더링
+async function runLocalServerRender(initialParams) {
+    try {
+        updateRenderModalUI({
+            heading: "소스 미디어 파일 동기화 중...",
+            desc: "로컬 FFmpeg 인코딩을 위해 소스 파일들을 서버로 동기화하고 있습니다.",
+            engine: "로컬 미디어 동기화",
+            status: "rendering"
+        });
+
+        // 1. 모든 에셋 파일을 로컬 서버 source/ 로 자동 동기화
+        await ensureAssetsUploadedToLocalServer();
+
+        // 2. 동기화된 최신 localPath 로 FFmpeg 파라미터 재생성
+        const renderParams = generateFFmpegCommand(STATE);
+        if (renderParams.error) {
+            throw new Error(renderParams.error);
+        }
+
         const startRes = await fetch('/api/render', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
