@@ -1,0 +1,22 @@
+# LookVideoEditor - Git Ignore Rules
+
+# FFmpeg 실행 파일 제외 (README 가이드는 남겨둠)
+ffmpeg/*.exe
+ffmpeg/*.zip
+
+# 사용자 소스 미디어 폴더
+source/*
+!source/.gitkeep
+
+# 렌더링된 최종 영상 출력 폴더
+output/*
+!output/.gitkeep
+
+# 로컬에서 생성된 프로젝트 파라미터 백업 파일
+LookVideoEditor_project_*.json
+sVidEditor_project_*.json
+
+# OS 및 Node 관련 임시 파일
+node_modules/
+Thumbs.db
+.DS_Store
