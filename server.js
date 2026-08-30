@@ -345,6 +345,16 @@ const server = http.createServer((req, res) => {
             } catch (e) {}
 
             const outputDir = path.resolve(ROOT_DIR, 'output');
+            
+            // 최신 파일 탐색 폴백
+            if ((!targetFile || !fs.existsSync(path.resolve(ROOT_DIR, targetFile))) && fs.existsSync(outputDir)) {
+                const files = fs.readdirSync(outputDir)
+                    .filter(f => f.endsWith('.mp4') || f.endsWith('.webm'))
+                    .map(f => ({ name: f, time: fs.statSync(path.join(outputDir, f)).mtime.getTime() }))
+                    .sort((a, b) => b.time - a.time);
+                if (files.length > 0) targetFile = path.join('output', files[0].name);
+            }
+
             const fullPath = targetFile ? path.resolve(ROOT_DIR, targetFile) : outputDir;
             console.log(`[LookVideoEditor] 저장 폴더 열기 요청: ${fullPath}`);
 
@@ -374,6 +384,17 @@ const server = http.createServer((req, res) => {
                     if (parsed.outputFile) targetFile = parsed.outputFile;
                 }
             } catch (e) {}
+
+            const outputDir = path.resolve(ROOT_DIR, 'output');
+            
+            // 최신 파일 탐색 폴백
+            if ((!targetFile || !fs.existsSync(path.resolve(ROOT_DIR, targetFile))) && fs.existsSync(outputDir)) {
+                const files = fs.readdirSync(outputDir)
+                    .filter(f => f.endsWith('.mp4') || f.endsWith('.webm'))
+                    .map(f => ({ name: f, time: fs.statSync(path.join(outputDir, f)).mtime.getTime() }))
+                    .sort((a, b) => b.time - a.time);
+                if (files.length > 0) targetFile = path.join('output', files[0].name);
+            }
 
             const fullPath = targetFile ? path.resolve(ROOT_DIR, targetFile) : null;
             console.log(`[LookVideoEditor] 결과 영상 재생 요청: ${fullPath}`);
