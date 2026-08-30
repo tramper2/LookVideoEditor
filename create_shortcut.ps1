@@ -8,7 +8,7 @@ $desktopPaths = @(
 ) | Select-Object -Unique | Where-Object { $_ -and (Test-Path $_) }
 
 $ws = New-Object -ComObject WScript.Shell
-$icoPath = Join-Path $targetDir 'app.ico'
+$icoPath = Join-Path $targetDir 'nanobanana.ico'
 
 foreach ($desktop in $desktopPaths) {
     $shortcutPath = Join-Path $desktop 'LookVideoEditor.lnk'
@@ -23,5 +23,5 @@ foreach ($desktop in $desktopPaths) {
     }
     $s.Description = 'LookVideoEditor - Local Video Studio'
     $s.Save()
-    Write-Host "[SUCCESS] Shortcut created at: $shortcutPath"
+    Write-Host "[SUCCESS] Shortcut created with nanobanana.ico at: $shortcutPath"
 }
