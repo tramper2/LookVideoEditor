@@ -128,11 +128,11 @@ const server = http.createServer((req, res) => {
         req.on('end', () => {
             try {
                 const data = JSON.parse(body);
-                const { command, outputFile, totalDuration } = data;
+                const { command, outputFile, totalDuration, fps, rawInputs, filterComplex, mappedVideo, mappedAudio, encoder } = data;
 
-                if (!command) {
+                if (!command && !rawInputs) {
                     res.writeHead(400, { 'Content-Type': 'application/json' });
-                    res.end(JSON.stringify({ error: 'FFmpeg 명령어가 제공되지 않았습니다.' }));
+                    res.end(JSON.stringify({ error: 'FFmpeg 렌더링 데이터가 제공되지 않았습니다.' }));
                     return;
                 }
 
@@ -148,11 +148,11 @@ const server = http.createServer((req, res) => {
                     progress: 0,
                     currentTime: "00:00:00.00",
                     totalDuration: totalDuration || 10,
-                    fps: "0",
+                    fps: String(fps || 30),
                     speed: "0x",
                     status: "rendering",
                     error: null,
-                    outputFile: outputFile || path.join('output', 'rendered_video.mp4'),
+                    outputFile: outputFile || path.join('output', `rendered_${Date.now()}.mp4`),
                     startTime: Date.now(),
                     elapsedTime: "00:00"
                 };
@@ -161,24 +161,55 @@ const server = http.createServer((req, res) => {
                 console.log(`[LookVideoEditor] 렌더링 시작: ${ffmpegBin}`);
                 console.log(`[LookVideoEditor] 출력 파일: ${renderState.outputFile}`);
 
-                let actualCmd = command;
-                if (actualCmd.startsWith('ffmpeg ')) {
-                    actualCmd = `"${ffmpegBin}" ` + actualCmd.substring(7);
+                let child;
+                const tempFilterPath = path.join(ROOT_DIR, `temp_filter_${Date.now()}.txt`);
+
+                if (rawInputs && filterComplex && mappedVideo && mappedAudio) {
+                    // 1. 최적의 안전 방식: -filter_complex_script 를 사용한 직접 spawn (Windows 쉘/따옴표 에러 100% 방지)
+                    const filterScriptContent = filterComplex.join(";\n");
+                    fs.writeFileSync(tempFilterPath, filterScriptContent, 'utf8');
+
+                    const args = ['-y'];
+                    rawInputs.forEach(inp => {
+                        if (inp.ss) args.push('-ss', inp.ss);
+                        if (inp.t) args.push('-t', inp.t);
+                        args.push('-i', inp.path);
+                    });
+
+                    args.push('-filter_complex_script', tempFilterPath);
+                    args.push('-map', mappedVideo);
+                    args.push('-map', mappedAudio);
+                    args.push('-t', parseFloat(totalDuration).toFixed(2));
+
+                    if (encoder === 'h264_nvenc') {
+                        args.push('-c:v', 'h264_nvenc', '-preset', 'p5', '-cq', '20');
+                    } else {
+                        args.push('-c:v', 'libx264', '-preset', 'medium', '-crf', '20');
+                    }
+
+                    args.push('-pix_fmt', 'yuv420p', '-r', String(fps || 30));
+                    args.push('-c:a', 'aac', '-b:a', '192k', '-ar', '44100');
+                    args.push(path.resolve(ROOT_DIR, renderState.outputFile));
+
+                    console.log(`[LookVideoEditor] FFmpeg 바이너리 직접 실행: ${ffmpegBin}`);
+                    console.log(`[LookVideoEditor] Arguments count: ${args.length}`);
+
+                    child = spawn(ffmpegBin, args, {
+                        cwd: ROOT_DIR,
+                        windowsHide: true
+                    });
+                } else {
+                    // 폴백: exec 방식
+                    let actualCmd = command;
+                    if (actualCmd.startsWith('ffmpeg ')) {
+                        actualCmd = `"${ffmpegBin}" ` + actualCmd.substring(7);
+                    }
+                    child = exec(actualCmd, {
+                        cwd: ROOT_DIR,
+                        windowsHide: true,
+                        maxBuffer: 1024 * 1024 * 50
+                    });
                 }
-
-                // Windows cmd 따옴표 파싱 에러 방지를 위해 임시 실행 배치파일을 통해 실행
-                const tempBatPath = path.join(ROOT_DIR, '_render_task.bat');
-                const batScript = `@echo off
-chcp 65001 >nul
-cd /d "${ROOT_DIR}"
-${actualCmd}
-`;
-                fs.writeFileSync(tempBatPath, batScript, 'utf8');
-
-                const child = spawn('cmd.exe', ['/c', tempBatPath], {
-                    cwd: ROOT_DIR,
-                    windowsHide: true
-                });
 
                 currentFfmpegProcess = child;
 
@@ -208,7 +239,7 @@ ${actualCmd}
                 child.on('close', (code) => {
                     currentFfmpegProcess = null;
                     try {
-                        if (fs.existsSync(tempBatPath)) fs.unlinkSync(tempBatPath);
+                        if (fs.existsSync(tempFilterPath)) fs.unlinkSync(tempFilterPath);
                     } catch (e) {}
 
                     if (renderState.status === 'cancelled') {

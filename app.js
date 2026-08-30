@@ -1864,7 +1864,12 @@ async function runLocalServerRender(renderParams) {
                 command: renderParams.command,
                 outputFile: renderParams.outputFile,
                 totalDuration: getProjectContentDuration(),
-                fps: STATE.outputFps
+                fps: STATE.outputFps,
+                rawInputs: renderParams.rawInputs,
+                filterComplex: renderParams.filterComplex,
+                mappedVideo: renderParams.mappedVideo,
+                mappedAudio: renderParams.mappedAudio,
+                encoder: STATE.encoder
             })
         });
 

@@ -56,6 +56,7 @@ function generateFFmpegCommand(projectState) {
     projectDuration = Math.max(0.1, parseFloat(projectDuration.toFixed(2)));
 
     let inputs = [];
+    let rawInputs = [];
     let filterComplex = [];
     let currentInputIndex = 0;
     
@@ -65,6 +66,11 @@ function generateFFmpegCommand(projectState) {
         const inputIdx = currentInputIndex++;
         const srcDur = clip.sourceEnd - clip.sourceStart;
         inputs.push(`-ss ${formatTime(clip.sourceStart)} -t ${formatTime(srcDur)} -i "${clip.localPath}"`);
+        rawInputs.push({
+            ss: formatTime(clip.sourceStart),
+            t: formatTime(srcDur),
+            path: clip.localPath
+        });
         return { clip, inputIdx };
     });
 
@@ -73,6 +79,11 @@ function generateFFmpegCommand(projectState) {
         const inputIdx = currentInputIndex++;
         const srcDur = clip.sourceEnd - clip.sourceStart;
         inputs.push(`-ss ${formatTime(clip.sourceStart)} -t ${formatTime(srcDur)} -i "${clip.localPath}"`);
+        rawInputs.push({
+            ss: formatTime(clip.sourceStart),
+            t: formatTime(srcDur),
+            path: clip.localPath
+        });
         return { clip, inputIdx };
     });
 
@@ -81,6 +92,11 @@ function generateFFmpegCommand(projectState) {
         const inputIdx = currentInputIndex++;
         const srcDur = clip.sourceEnd - clip.sourceStart;
         inputs.push(`-ss ${formatTime(clip.sourceStart)} -t ${formatTime(srcDur)} -i "${clip.localPath}"`);
+        rawInputs.push({
+            ss: formatTime(clip.sourceStart),
+            t: formatTime(srcDur),
+            path: clip.localPath
+        });
         return { clip, inputIdx };
     });
 
@@ -89,6 +105,9 @@ function generateFFmpegCommand(projectState) {
     const imageMappings = imageClips.map((clip, index) => {
         const inputIdx = currentInputIndex++;
         inputs.push(`-i "${clip.localPath}"`);
+        rawInputs.push({
+            path: clip.localPath
+        });
         return { clip, inputIdx };
     });
 
@@ -403,8 +422,11 @@ pause
         command: fullCommand,
         batContent: batContent,
         outputFile: outputFilename,
+        projectDuration: projectDuration,
         filterString: filterString,
+        filterComplex: filterComplex,
         inputs: inputs,
+        rawInputs: rawInputs,
         mappedVideo: mappedVideo,
         mappedAudio: mappedAudio,
         videoCodecOption: videoCodecOption,
