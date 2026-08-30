@@ -47,6 +47,14 @@ function generateFFmpegCommand(projectState) {
         };
     }
 
+    // 프로젝트 전체 실제 재생 길이 계산 (가장 늦게 끝나는 클립의 종료 시점)
+    let projectDuration = 0;
+    clips.forEach(c => {
+        const end = c.timelineStart + c.duration;
+        if (end > projectDuration) projectDuration = end;
+    });
+    projectDuration = Math.max(0.1, parseFloat(projectDuration.toFixed(2)));
+
     let inputs = [];
     let filterComplex = [];
     let currentInputIndex = 0;
@@ -85,11 +93,12 @@ function generateFFmpegCommand(projectState) {
     });
 
     // --- Filter Complex 생성 ---
-    
-    // 1. Video Track 1 클립 전처리 및 Concat 결합
-    let v1ConcatInputs = "";
-    let a1ConcatInputs = "";
-    
+    // 베이스 블랙 캔버스 생성 (정확한 프로젝트 재생 길이 및 지정 해상도/FPS)
+    filterComplex.push(`color=c=black:s=${outW}x${outH}:r=${outFPS}:d=${projectDuration.toFixed(2)}[base_canvas]`);
+    let currentVideoNode = "base_canvas";
+    let audioMixInputs = [];
+
+    // 1. Video Track 1 클립 전처리 및 베이스 캔버스 상 오버레이 합성
     video1Mappings.forEach((mapping, i) => {
         const { clip, inputIdx } = mapping;
         let vFilters = [];
@@ -139,20 +148,26 @@ function generateFFmpegCommand(projectState) {
         aFilters.push(`volume=${vol}`);
         aFilters.push("aresample=44100");
         
-        const vOutLabel = `v1_${i}`;
-        const aOutLabel = `a1_${i}`;
+        // 타임라인 위치에 맞추어 오디오 딜레이(adelay) 부여
+        const delayMs = Math.round(clip.timelineStart * 1000);
+        if (delayMs > 0) {
+            aFilters.push(`adelay=${delayMs}|${delayMs}`);
+        }
         
-        filterComplex.push(`[${inputIdx}:v]${vFilters.join(",")}[${vOutLabel}]`);
-        filterComplex.push(`[${inputIdx}:a]${aFilters.join(",")}[${aOutLabel}]`);
+        const vProcessed = `v1_proc_${inputIdx}`;
+        const aProcessed = `a1_delayed_${inputIdx}`;
         
-        v1ConcatInputs += `[${vOutLabel}][${aOutLabel}]`;
+        filterComplex.push(`[${inputIdx}:v]${vFilters.join(",")}[${vProcessed}]`);
+        filterComplex.push(`[${inputIdx}:a]${aFilters.join(",")}[${aProcessed}]`);
+        
+        // 베이스 캔버스 위에 타임라인 위치(timelineStart)에 맞게 오버레이
+        const nextVideoNode = `v1_layer_${inputIdx}`;
+        const endTimeline = clip.timelineStart + clip.duration;
+        filterComplex.push(`[${currentVideoNode}][${vProcessed}]overlay=x=0:y=0:enable='between(t,${clip.timelineStart.toFixed(2)},${endTimeline.toFixed(2)})'[${nextVideoNode}]`);
+        currentVideoNode = nextVideoNode;
+        
+        audioMixInputs.push(`[${aProcessed}]`);
     });
-    
-    // Video Track 1 Concat
-    filterComplex.push(`${v1ConcatInputs}concat=n=${video1Mappings.length}:v=1:a=1[v_track1][a_track1]`);
-    
-    let currentVideoNode = "v_track1";
-    let audioMixInputs = ["[a_track1]"];
     
     // 2. Video Track 2 (PIP) 전처리 및 오버레이 합성
     video2Mappings.forEach((mapping, i) => {
@@ -167,7 +182,6 @@ function generateFFmpegCommand(projectState) {
         
         // 2.2 PIP 크기 스케일 (기본 320x180)
         const pip = clip.pip || { width: 320, height: 180, x: 20, y: 20 };
-        // 1280x720 기준 좌표계를 실제 출력 해상도 비율로 스케일링
         const scaleX = outW / 1280;
         const scaleY = outH / 720;
         const pipW = Math.round(pip.width * scaleX);
@@ -223,7 +237,7 @@ function generateFFmpegCommand(projectState) {
         // 오버레이 합성 (출현 구간 설정)
         const nextVideoNode = `v_overlay_${inputIdx}`;
         const endTimeline = clip.timelineStart + clip.duration;
-        filterComplex.push(`[${currentVideoNode}][${vProcessed}]overlay=x=${pipX}:y=${pipY}:enable='between(t,${clip.timelineStart},${endTimeline})'[${nextVideoNode}]`);
+        filterComplex.push(`[${currentVideoNode}][${vProcessed}]overlay=x=${pipX}:y=${pipY}:enable='between(t,${clip.timelineStart.toFixed(2)},${endTimeline.toFixed(2)})'[${nextVideoNode}]`);
         currentVideoNode = nextVideoNode;
         
         audioMixInputs.push(`[${aDelayed}]`);
@@ -262,7 +276,7 @@ function generateFFmpegCommand(projectState) {
         
         const nextVideoNode = `v_img_overlay_${inputIdx}`;
         const endTimeline = clip.timelineStart + clip.duration;
-        filterComplex.push(`[${currentVideoNode}][${imgProcessed}]overlay=x=${imgX}:y=${imgY}:enable='between(t,${clip.timelineStart},${endTimeline})'[${nextVideoNode}]`);
+        filterComplex.push(`[${currentVideoNode}][${imgProcessed}]overlay=x=${imgX}:y=${imgY}:enable='between(t,${clip.timelineStart.toFixed(2)},${endTimeline.toFixed(2)})'[${nextVideoNode}]`);
         currentVideoNode = nextVideoNode;
     });
     
@@ -286,17 +300,22 @@ function generateFFmpegCommand(projectState) {
         let textYExpr = `${Math.round(clip.y * (outH / 720))}`;
         
         const nextVideoNode = `v_text_overlay_${i}`;
-        filterComplex.push(`[${currentVideoNode}]drawtext=text='${textEscaped}':x=${textXExpr}:y=${textYExpr}:fontsize=${fontSize}:fontcolor=${fontColor}:box=1:boxcolor=black@0.4:fontfile='${fontPath}':enable='between(t,${clip.timelineStart},${endTimeline})'[${nextVideoNode}]`);
+        filterComplex.push(`[${currentVideoNode}]drawtext=text='${textEscaped}':x=${textXExpr}:y=${textYExpr}:fontsize=${fontSize}:fontcolor=${fontColor}:box=1:boxcolor=black@0.4:fontfile='${fontPath}':enable='between(t,${clip.timelineStart.toFixed(2)},${endTimeline.toFixed(2)})'[${nextVideoNode}]`);
         currentVideoNode = nextVideoNode;
     });
 
     // 6. 오디오 최종 믹싱 (amix)
     let finalAudioNode = "a_final";
-    if (audioMixInputs.length > 1) {
-        filterComplex.push(`${audioMixInputs.join("")}amix=inputs=${audioMixInputs.length}:duration=first:dropout_transition=2[a_mixed]`);
-        finalAudioNode = "a_mixed";
+    if (audioMixInputs.length > 0) {
+        if (audioMixInputs.length === 1) {
+            finalAudioNode = audioMixInputs[0].slice(1, -1);
+        } else {
+            filterComplex.push(`${audioMixInputs.join("")}amix=inputs=${audioMixInputs.length}:duration=longest:dropout_transition=0[a_mixed]`);
+            finalAudioNode = "a_mixed";
+        }
     } else {
-        finalAudioNode = "a_track1";
+        filterComplex.push(`anullsrc=r=44100:cl=stereo:d=${projectDuration.toFixed(2)}[a_silent]`);
+        finalAudioNode = "a_silent";
     }
     
     const filterString = filterComplex.join(";");
@@ -312,7 +331,7 @@ function generateFFmpegCommand(projectState) {
     const mappedAudio = `[${finalAudioNode}]`;
     
     // 순수 FFmpeg 단일 명령어 문자열
-    const fullCommand = `ffmpeg -y ${inputs.join(" ")} -filter_complex "${filterString}" -map "${mappedVideo}" -map "${mappedAudio}" ${videoCodecOption} -pix_fmt yuv420p -r ${outFPS} -c:a aac -b:a 192k -ar 44100 "${outputFilename}"`;
+    const fullCommand = `ffmpeg -y ${inputs.join(" ")} -filter_complex "${filterString}" -map "${mappedVideo}" -map "${mappedAudio}" -t ${projectDuration.toFixed(2)} ${videoCodecOption} -pix_fmt yuv420p -r ${outFPS} -c:a aac -b:a 192k -ar 44100 "${outputFilename}"`;
     
     // Windows 실행용 배치파일 내용
     const batContent = `@echo off
@@ -357,7 +376,7 @@ echo [INFO] Executing FFMPEG filters and encoding...
 echo.
 
 REM 3. Run FFMPEG
-%FFMPEG_BIN% -y ${inputs.join(" ")} -filter_complex "${filterString.replace(/"/g, '\"')}" -map "${mappedVideo}" -map "${mappedAudio}" ${videoCodecOption} -pix_fmt yuv420p -r ${outFPS} -c:a aac -b:a 192k -ar 44100 "${outputFilename}"
+%FFMPEG_BIN% -y ${inputs.join(" ")} -filter_complex "${filterString.replace(/"/g, '\"')}" -map "${mappedVideo}" -map "${mappedAudio}" -t ${projectDuration.toFixed(2)} ${videoCodecOption} -pix_fmt yuv420p -r ${outFPS} -c:a aac -b:a 192k -ar 44100 "${outputFilename}"
 
 if %errorlevel% neq 0 goto RENDER_ERROR
 

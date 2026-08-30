@@ -1125,15 +1125,23 @@ function clearTimeline() {
     }
 }
 
-// 타임라인 총 길이 재계산
-function recalculateTotalDuration() {
-    let maxTime = 10;
+// 실제 타임라인 클립들의 총 재생 길이 (초)
+function getProjectContentDuration() {
+    if (!STATE.clips || STATE.clips.length === 0) return 0;
+    let maxEnd = 0;
     STATE.clips.forEach(c => {
         const end = c.timelineStart + c.duration;
-        if (end > maxTime) maxTime = end;
+        if (end > maxEnd) maxEnd = end;
     });
-    STATE.totalDuration = Math.max(10, maxTime + 2.0);
+    return parseFloat(maxEnd.toFixed(2));
+}
+
+// 타임라인 총 길이 재계산
+function recalculateTotalDuration() {
+    const contentDur = getProjectContentDuration();
+    STATE.totalDuration = contentDur > 0 ? contentDur : 10.0;
     drawRuler();
+    updateTimeDisplay();
 }
 
 // 타임라인 줌 변경
@@ -1461,8 +1469,9 @@ function updateMuteUI() {
 }
 
 function updateTimeDisplay() {
+    const contentDur = getProjectContentDuration();
     const currentStr = formatHHMMSS(STATE.playheadTime);
-    const totalStr = formatHHMMSS(STATE.totalDuration - 2.0);
+    const totalStr = formatHHMMSS(contentDur);
     DOM.timeDisplay.textContent = `${currentStr} / ${totalStr}`;
 }
 
@@ -1854,7 +1863,7 @@ async function runLocalServerRender(renderParams) {
             body: JSON.stringify({
                 command: renderParams.command,
                 outputFile: renderParams.outputFile,
-                totalDuration: STATE.totalDuration,
+                totalDuration: getProjectContentDuration(),
                 fps: STATE.outputFps
             })
         });
@@ -1937,8 +1946,40 @@ async function pollRenderProgress() {
     }
 }
 
+// 비디오 엘리먼트 비동기 Seek 완료 대기 헬퍼
+function waitPlayerSeek(player, targetTime) {
+    return new Promise(resolve => {
+        if (Math.abs(player.currentTime - targetTime) < 0.02 && player.readyState >= 2) {
+            return resolve();
+        }
+        let timer = null;
+        const onSeeked = () => {
+            if (timer) clearTimeout(timer);
+            player.removeEventListener('seeked', onSeeked);
+            resolve();
+        };
+        timer = setTimeout(() => {
+            player.removeEventListener('seeked', onSeeked);
+            resolve();
+        }, 150); // 150ms 타임아웃 세이프가드
+        player.addEventListener('seeked', onSeeked, { once: true });
+        try {
+            player.currentTime = targetTime;
+        } catch (e) {
+            resolve();
+        }
+    });
+}
+
 // [모드 2] 브라우저 내장 클라이언트 사이드 즉시 렌더링 (Canvas + MediaRecorder)
 async function runBrowserClientRender() {
+    const totalDuration = getProjectContentDuration();
+    if (totalDuration <= 0) {
+        alert("타임라인에 렌더링할 클립이 없습니다.");
+        DOM.renderModal.classList.remove('show');
+        return;
+    }
+
     updateRenderModalUI({
         heading: "브라우저 즉시 렌더링 중...",
         desc: "브라우저 내장 인코더를 통해 타임라인을 합성하고 있습니다.",
@@ -1952,7 +1993,8 @@ async function runBrowserClientRender() {
         renderCanvas.height = STATE.outputHeight;
         const rCtx = renderCanvas.getContext('2d');
 
-        const stream = renderCanvas.captureStream(STATE.outputFps);
+        const fps = STATE.outputFps || 30;
+        const stream = renderCanvas.captureStream(fps);
         
         let mimeType = 'video/webm; codecs=vp9';
         if (!MediaRecorder.isTypeSupported(mimeType)) {
@@ -1961,7 +2003,7 @@ async function runBrowserClientRender() {
 
         const recorder = new MediaRecorder(stream, {
             mimeType: mimeType,
-            videoBitsPerSecond: 8000000
+            videoBitsPerSecond: 10000000
         });
 
         const chunks = [];
@@ -1969,53 +2011,70 @@ async function runBrowserClientRender() {
             if (e.data && e.data.size > 0) chunks.push(e.data);
         };
 
-        recorder.onstop = () => {
-            const blob = new Blob(chunks, { type: 'video/webm' });
-            const url = URL.createObjectURL(blob);
-            const fileName = `LookVideo_${formatDateForFilename(new Date())}.webm`;
+        const renderPromise = new Promise(resolve => {
+            recorder.onstop = () => {
+                const blob = new Blob(chunks, { type: 'video/webm' });
+                const url = URL.createObjectURL(blob);
+                const fileName = `LookVideo_${formatDateForFilename(new Date())}.webm`;
 
-            // 자동 다운로드 트리거
-            const a = document.createElement('a');
-            a.href = url;
-            a.download = fileName;
-            document.body.appendChild(a);
-            a.click();
-            document.body.removeChild(a);
+                // 자동 다운로드 트리거
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = fileName;
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
 
-            updateRenderModalUI({
-                progress: 100,
-                heading: "브라우저 렌더링 완료!",
-                desc: "영상이 생성되어 다운로드 폴더에 자동 저장되었습니다.",
-                outputFile: fileName,
-                status: "completed",
-                isBrowserBlob: true,
-                blobUrl: url
-            });
-        };
+                updateRenderModalUI({
+                    progress: 100,
+                    heading: "브라우저 렌더링 완료!",
+                    desc: "영상이 생성되어 다운로드 폴더에 자동 저장되었습니다.",
+                    outputFile: fileName,
+                    status: "completed",
+                    isBrowserBlob: true,
+                    blobUrl: url
+                });
+                resolve();
+            };
+        });
 
         recorder.start();
 
-        // 타임라인 프레임별 드로잉 렌더 루프
-        const totalDuration = STATE.totalDuration;
-        const fps = STATE.outputFps;
+        const totalFrames = Math.ceil(totalDuration * fps);
         const frameInterval = 1 / fps;
-        let currentTime = 0;
         const startTime = Date.now();
 
-        const renderInterval = setInterval(() => {
+        for (let i = 0; i <= totalFrames; i++) {
             if (!DOM.renderModal.classList.contains('show')) {
-                clearInterval(renderInterval);
                 recorder.stop();
                 return;
             }
 
-            currentTime += frameInterval;
-            const progress = Math.min(99, (currentTime / totalDuration) * 100);
+            const currentTime = Math.min(totalDuration, i * frameInterval);
 
-            // 해당 시점의 프레임을 렌더 캔버스에 그리기
+            // 해당 시점의 활성 비디오 클립 플레이어들을 Seek 대기
+            const activeVideoClips = STATE.clips.filter(c => 
+                (c.track === 'video1' || c.track === 'video2') && 
+                currentTime >= c.timelineStart && 
+                currentTime < c.timelineStart + c.duration
+            );
+
+            for (const clip of activeVideoClips) {
+                const player = activePlayers[clip.assetId];
+                if (player) {
+                    const clipElapsed = currentTime - clip.timelineStart;
+                    const speed = clip.speed || 1.0;
+                    const sourcePlayTime = clip.sourceStart + clipElapsed * speed;
+                    await waitPlayerSeek(player, sourcePlayTime);
+                }
+            }
+
+            // 시점 설정 및 프레임 그리기
             setPlayheadTime(currentTime);
+            renderPreview();
             rCtx.drawImage(DOM.previewCanvas, 0, 0, renderCanvas.width, renderCanvas.height);
 
+            const progress = Math.min(99, Math.round((i / totalFrames) * 100));
             const elapsedSec = Math.floor((Date.now() - startTime) / 1000);
             const m = Math.floor(elapsedSec / 60);
             const s = elapsedSec % 60;
@@ -2029,11 +2088,13 @@ async function runBrowserClientRender() {
                 status: "rendering"
             });
 
-            if (currentTime >= totalDuration) {
-                clearInterval(renderInterval);
-                recorder.stop();
-            }
-        }, 1000 / fps);
+            // MediaRecorder 프레임 캡처 대기
+            await new Promise(r => setTimeout(r, 20));
+        }
+
+        await new Promise(r => setTimeout(r, 200));
+        recorder.stop();
+        await renderPromise;
 
     } catch (err) {
         console.error("Browser client render error:", err);
