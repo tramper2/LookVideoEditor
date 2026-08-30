@@ -2244,6 +2244,16 @@ function updateRenderModalUI(data) {
         } else {
             DOM.btnOpenRenderedFile.classList.remove('hide');
             DOM.btnOpenOutputFolder.classList.remove('hide');
+            DOM.btnDownloadRenderedVideo.classList.remove('hide');
+            DOM.btnDownloadRenderedVideo.onclick = () => {
+                const a = document.createElement('a');
+                const cleanPath = (data.outputFile || STATE.activeRenderOutput || '').replace(/\\/g, '/');
+                a.href = cleanPath.startsWith('/') ? cleanPath : `/${cleanPath}`;
+                a.download = (data.outputFile || 'rendered_video.mp4').split(/[\\\/]/).pop();
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+            };
         }
     } else if (data.status === 'error' || data.status === 'cancelled') {
         DOM.renderSpinner.classList.add('hide');
@@ -2290,13 +2300,22 @@ async function cancelRendering() {
 
 async function openRenderedVideoFile() {
     try {
-        await fetch('/api/open-file', {
+        const res = await fetch('/api/open-file', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ outputFile: STATE.activeRenderOutput })
         });
+        if (!res.ok) {
+            // 브라우저 새 탭에서 즉시 비디오 스트리밍 재생
+            const cleanPath = (STATE.activeRenderOutput || 'output/rendered_video.mp4').replace(/\\/g, '/');
+            const fileUrl = cleanPath.startsWith('/') ? cleanPath : `/${cleanPath}`;
+            window.open(fileUrl, '_blank');
+        }
     } catch (e) {
         console.error("Open file error:", e);
+        const cleanPath = (STATE.activeRenderOutput || 'output/rendered_video.mp4').replace(/\\/g, '/');
+        const fileUrl = cleanPath.startsWith('/') ? cleanPath : `/${cleanPath}`;
+        window.open(fileUrl, '_blank');
     }
 }
 

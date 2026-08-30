@@ -344,17 +344,20 @@ const server = http.createServer((req, res) => {
                 }
             } catch (e) {}
 
-            const fullPath = targetFile ? path.resolve(ROOT_DIR, targetFile) : path.resolve(ROOT_DIR, 'output');
-            if (fs.existsSync(fullPath)) {
+            const outputDir = path.resolve(ROOT_DIR, 'output');
+            const fullPath = targetFile ? path.resolve(ROOT_DIR, targetFile) : outputDir;
+            console.log(`[LookVideoEditor] 저장 폴더 열기 요청: ${fullPath}`);
+
+            if (fs.existsSync(fullPath) && fs.statSync(fullPath).isFile()) {
                 exec(`explorer.exe /select,"${fullPath}"`, (err) => {
-                    if (err) exec(`explorer.exe "${path.resolve(ROOT_DIR, 'output')}"`);
+                    if (err) exec(`explorer.exe "${outputDir}"`);
                 });
             } else {
-                exec(`explorer.exe "${path.resolve(ROOT_DIR, 'output')}"`);
+                exec(`explorer.exe "${outputDir}"`);
             }
 
             res.writeHead(200, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify({ status: 'opened' }));
+            res.end(JSON.stringify({ status: 'opened', path: outputDir }));
         });
         return;
     }
@@ -373,10 +376,17 @@ const server = http.createServer((req, res) => {
             } catch (e) {}
 
             const fullPath = targetFile ? path.resolve(ROOT_DIR, targetFile) : null;
+            console.log(`[LookVideoEditor] 결과 영상 재생 요청: ${fullPath}`);
+
             if (fullPath && fs.existsSync(fullPath)) {
-                exec(`start "" "${fullPath}"`);
+                // Windows PowerShell Start-Process 를 통해 기본 미디어 플레이어로 즉시 실행
+                exec(`powershell -Command "Start-Process '${fullPath.replace(/'/g, "''")}'"`, (err) => {
+                    if (err) {
+                        exec(`explorer.exe "${fullPath}"`);
+                    }
+                });
                 res.writeHead(200, { 'Content-Type': 'application/json' });
-                res.end(JSON.stringify({ status: 'opened' }));
+                res.end(JSON.stringify({ status: 'opened', file: fullPath }));
             } else {
                 res.writeHead(404, { 'Content-Type': 'application/json' });
                 res.end(JSON.stringify({ error: '파일을 찾을 수 없습니다.' }));
@@ -385,7 +395,7 @@ const server = http.createServer((req, res) => {
         return;
     }
 
-    // --- 정적 파일 서빙 ---
+    // --- 정적 파일 서빙 (HTTP 206 Partial Content 비디오 스트리밍 지원) ---
     let safePath = path.normalize(pathname).replace(/^(\.\.[\/\\])+/, '');
     if (safePath === '/' || safePath === '\\') {
         safePath = 'index.html';
@@ -402,10 +412,30 @@ const server = http.createServer((req, res) => {
 
         const ext = path.extname(filePath).toLowerCase();
         const contentType = MIME_TYPES[ext] || 'application/octet-stream';
+        const range = req.headers.range;
 
-        res.writeHead(200, { 'Content-Type': contentType });
-        const stream = fs.createReadStream(filePath);
-        stream.pipe(res);
+        if (range && (ext === '.mp4' || ext === '.webm' || ext === '.mp3')) {
+            const parts = range.replace(/bytes=/, "").split("-");
+            const start = parseInt(parts[0], 10);
+            const end = parts[1] ? parseInt(parts[1], 10) : stats.size - 1;
+            const chunksize = (end - start) + 1;
+            const file = fs.createReadStream(filePath, { start, end });
+            res.writeHead(206, {
+                'Content-Range': `bytes ${start}-${end}/${stats.size}`,
+                'Accept-Ranges': 'bytes',
+                'Content-Length': chunksize,
+                'Content-Type': contentType,
+            });
+            file.pipe(res);
+        } else {
+            res.writeHead(200, {
+                'Content-Length': stats.size,
+                'Content-Type': contentType,
+                'Accept-Ranges': 'bytes'
+            });
+            const stream = fs.createReadStream(filePath);
+            stream.pipe(res);
+        }
     });
 });
 
