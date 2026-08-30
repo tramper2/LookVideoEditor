@@ -1412,9 +1412,16 @@ body.resizing-row {
     font-weight: 500;
 }
 
-/* Hidden Utility Elements */
+/* Hidden Utility Elements (DOM에 실존해야 브라우저 하드웨어 비디오 디코더가 활성화됨) */
 .hidden-players {
-    display: none;
+    position: fixed;
+    top: -9999px;
+    left: -9999px;
+    width: 160px;
+    height: 90px;
+    opacity: 0.01;
+    pointer-events: none;
+    z-index: -9999;
 }
 
 .hide {
