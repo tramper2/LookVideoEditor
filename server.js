@@ -161,14 +161,21 @@ const server = http.createServer((req, res) => {
                 console.log(`[LookVideoEditor] 렌더링 시작: ${ffmpegBin}`);
                 console.log(`[LookVideoEditor] 출력 파일: ${renderState.outputFile}`);
 
-                // 명령어에서 ffmpeg 호출부를 제외하고 인자 추출하거나 cmd /c 로 실행
-                // Windows UTF-8 환경 안정성을 위해 chcp 65001 및 cmd.exe를 통해 실행
                 let actualCmd = command;
                 if (actualCmd.startsWith('ffmpeg ')) {
                     actualCmd = `"${ffmpegBin}" ` + actualCmd.substring(7);
                 }
 
-                const child = spawn('cmd.exe', ['/c', `chcp 65001 >nul && ${actualCmd}`], {
+                // Windows cmd 따옴표 파싱 에러 방지를 위해 임시 실행 배치파일을 통해 실행
+                const tempBatPath = path.join(ROOT_DIR, '_render_task.bat');
+                const batScript = `@echo off
+chcp 65001 >nul
+cd /d "${ROOT_DIR}"
+${actualCmd}
+`;
+                fs.writeFileSync(tempBatPath, batScript, 'utf8');
+
+                const child = spawn('cmd.exe', ['/c', tempBatPath], {
                     cwd: ROOT_DIR,
                     windowsHide: true
                 });
@@ -200,6 +207,10 @@ const server = http.createServer((req, res) => {
 
                 child.on('close', (code) => {
                     currentFfmpegProcess = null;
+                    try {
+                        if (fs.existsSync(tempBatPath)) fs.unlinkSync(tempBatPath);
+                    } catch (e) {}
+
                     if (renderState.status === 'cancelled') {
                         console.log('[LookVideoEditor] 렌더링이 사용자에 의해 취소되었습니다.');
                         return;
@@ -221,6 +232,9 @@ const server = http.createServer((req, res) => {
 
                 child.on('error', (err) => {
                     currentFfmpegProcess = null;
+                    try {
+                        if (fs.existsSync(tempBatPath)) fs.unlinkSync(tempBatPath);
+                    } catch (e) {}
                     renderState.isRendering = false;
                     renderState.status = 'error';
                     renderState.error = err.message;
