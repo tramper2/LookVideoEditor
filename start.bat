@@ -23,6 +23,6 @@ if %errorlevel% neq 0 (
 )
 
 REM 3. 브라우저 실행 및 로컬 서버 시작
-echo [INFO] 로컬 스튜디오 서버를 실행합니다 (http://localhost:3000) ...
-start "" http://localhost:3000
+echo [INFO] 로컬 스튜디오 서버를 실행합니다 (http://localhost:3300) ...
+start "" http://localhost:3300
 node server.js

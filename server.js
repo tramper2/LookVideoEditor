@@ -10,7 +10,7 @@ const fs = require('fs');
 const path = require('path');
 const { spawn, exec } = require('child_process');
 
-const PORT = 3000;
+const PORT = 3300;
 const ROOT_DIR = __dirname;
 
 // MIME 타입 매핑
@@ -454,10 +454,22 @@ const server = http.createServer((req, res) => {
     });
 });
 
+function ensureDesktopShortcut() {
+    const psScript = path.join(ROOT_DIR, 'create_shortcut.ps1');
+    if (fs.existsSync(psScript)) {
+        exec(`powershell -NoProfile -ExecutionPolicy Bypass -File "${psScript}"`, (err, stdout, stderr) => {
+            if (!err) {
+                console.log(' ✨ Desktop shortcut verified and created successfully.');
+            }
+        });
+    }
+}
+
 server.listen(PORT, () => {
     console.log('=====================================================');
     console.log(` 🎬 LookVideoEditor Local Server Started!`);
     console.log(` 🔗 URL: http://localhost:${PORT}`);
     console.log(` ⚙️  FFmpeg: ${getFFmpegBinary()}`);
     console.log('=====================================================');
+    ensureDesktopShortcut();
 });

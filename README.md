@@ -47,7 +47,7 @@ LookVideoEditor/
 ## ⚡ 빠른 시작 가이드
 
 ### 1. 에디터 실행
-- **방법 1 (권장)**: `start.bat`을 더블 클릭하면 로컬 서버(`http://localhost:3000`)가 구동되며 기본 웹 브라우저에서 LookVideoEditor가 즉시 열립니다.
+- **방법 1 (권장)**: `start.bat`을 더블 클릭하면 로컬 서버(`http://localhost:3300`)가 구동되며 기본 웹 브라우저에서 LookVideoEditor가 즉시 열립니다.
 - **방법 2**: `index.html` 파일을 더블 클릭하여 직접 실행합니다.
 
 ### 2. 영상 편집
