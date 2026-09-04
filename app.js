@@ -108,6 +108,7 @@ const DOM = {
     propTextColor: document.getElementById('prop-text-color'),
     propTextOpacity: document.getElementById('prop-text-opacity'),
     propTextOpacityLabel: document.getElementById('prop-text-opacity-label'),
+    propTextWeight: document.getElementById('prop-text-weight'),
     propTextEffect: document.getElementById('prop-text-effect'),
     propTextBgbox: document.getElementById('prop-text-bgbox'),
     propTextFont: document.getElementById('prop-text-font'),
@@ -344,7 +345,7 @@ function setupEventListeners() {
         DOM.propVolume, DOM.propSpeed, DOM.propPipWidth, DOM.propPipHeight,
         DOM.propPipX, DOM.propPipY, DOM.propAudioVolume,
         DOM.propTextContent, DOM.propTextSize, DOM.propTextColor,
-        DOM.propTextOpacity, DOM.propTextEffect, DOM.propTextBgbox,
+        DOM.propTextOpacity, DOM.propTextEffect, DOM.propTextBgbox, DOM.propTextWeight,
         DOM.propTextFont, DOM.propTextFontCustom,
         DOM.propImgWidth, DOM.propImgHeight, DOM.propTextX, DOM.propTextY,
         DOM.propFadeOutDuration
@@ -921,6 +922,7 @@ function addTextOverlayClip() {
         textOpacity: 100,
         textEffect: 'none',
         textBgbox: 'on',
+        textWeight: 'normal',
         textFont: 'malgun',
         textFontCustom: '',
         x: 640, // 가로 중앙 (1280x720 기준)
@@ -1147,6 +1149,7 @@ function selectClip(clipId) {
             if (DOM.propTextOpacityLabel) DOM.propTextOpacityLabel.textContent = `${DOM.propTextOpacity.value}%`;
             DOM.propTextEffect.value = clip.textEffect || 'none';
             DOM.propTextBgbox.value = clip.textBgbox || 'on';
+            DOM.propTextWeight.value = clip.textWeight || 'normal';
             DOM.propTextFont.value = clip.textFont || 'malgun';
             DOM.propTextFontCustom.value = clip.textFontCustom || '';
             if (clip.textFont === 'custom') {
@@ -1258,6 +1261,7 @@ function updateSelectedClipFromInputs(e) {
             if (isNaN(clip.textOpacity)) clip.textOpacity = 100;
             clip.textEffect = DOM.propTextEffect.value;
             clip.textBgbox = DOM.propTextBgbox.value;
+            clip.textWeight = DOM.propTextWeight.value;
             clip.textFont = DOM.propTextFont.value;
             clip.textFontCustom = DOM.propTextFontCustom.value;
             if (DOM.propTextOpacityLabel) DOM.propTextOpacityLabel.textContent = `${clip.textOpacity}%`;
@@ -1776,7 +1780,8 @@ function renderPreview() {
             ctx.fillStyle = hexToRgba(clip.textColor || '#ffffff', clip.textOpacity);
             const fontFamily = getCanvasFontFamily(clip.textFont);
             const fontSize = Math.round((clip.textSize || 36) * scale);
-            ctx.font = `500 ${fontSize}px ${fontFamily}`;
+            const fontWeight = clip.textWeight === 'bold' ? 700 : 500;
+            ctx.font = `${fontWeight} ${fontSize}px ${fontFamily}`;
 
             const textEffect = clip.textEffect || 'none';
             const hasShadow = textEffect === 'shadow' || textEffect === 'outline_shadow';

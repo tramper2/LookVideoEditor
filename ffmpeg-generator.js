@@ -308,7 +308,7 @@ function generateFFmpegCommand(projectState) {
         const fontColor = clip.textColor || "#ffffff";
         const opacityVal = (clip.textOpacity !== undefined ? clip.textOpacity : 100) / 100;
         const fontColorWithAlpha = `${fontColor}@${opacityVal.toFixed(2)}`;
-        const fontPath = getFFmpegFontPath(clip.textFont || 'malgun', clip.textFontCustom);
+        const fontPath = getFFmpegFontPath(clip.textFont || 'malgun', clip.textFontCustom, clip.textWeight === 'bold');
 
         // 문자 효과 (외곽선 / 그림자)
         let textEffectOpts = '';
@@ -482,7 +482,7 @@ function formatDateForFilename(date) {
 /**
  * 선택된 글꼴 키에 부합하는 Windows 로컬 FFMPEG 용 폰트 절대경로 반환
  */
-function getFFmpegFontPath(textFont, textFontCustom) {
+function getFFmpegFontPath(textFont, textFontCustom, isBold) {
     if (textFont === 'custom' && textFontCustom) {
         let path = textFontCustom.replace(/\\/g, '/');
         if (path.substring(1, 3) === ':/') {
@@ -490,7 +490,21 @@ function getFFmpegFontPath(textFont, textFontCustom) {
         }
         return path;
     }
-    
+
+    // 굵게: 폰트별 Bold 파일 사용 (drawtext는 fontweight 미지원 빌드가 있어 fontfile 교체 방식)
+    if (isBold) {
+        switch (textFont) {
+            case 'arial':
+                return 'C\\:/Windows/Fonts/arialbd.ttf';
+            case 'gulim':
+            case 'batang':
+            case 'malgun':
+            default:
+                // 굵은 변형이 없는 폰트는 맑은 고딕 Bold로 폴백
+                return 'C\\:/Windows/Fonts/malgunbd.ttf';
+        }
+    }
+
     switch (textFont) {
         case 'gulim':
             return 'C\\:/Windows/Fonts/gulim.ttc';
