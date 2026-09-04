@@ -746,8 +746,52 @@ function renderReelsGrid() {
 
 let hasAutoSwitchedToPortrait = false;
 
+// 에셋용 숨김 미디어 플레이어 생성 (프리뷰 메타데이터/프레임 로드)
+function createHiddenPlayerForAsset(asset) {
+    if (activePlayers[asset.id] || asset.isPreviewDisabled) return;
+
+    if (asset.type === 'video') {
+        const video = document.createElement('video');
+        video.src = asset.url;
+        video.preload = 'auto';
+        video.muted = true;
+        video.playsInline = true;
+        video.crossOrigin = 'anonymous';
+
+        video.onloadedmetadata = () => {
+            asset.duration = video.duration || asset.duration || 10.0;
+            updateAssetListUI();
+            updateTimelineClipsUI();
+            renderPreview();
+        };
+        video.onerror = () => {
+            console.warn('[LookVideoEditor] 미디어 프리뷰 로드 실패:', asset.name);
+            asset.isPreviewDisabled = true;
+            updateAssetListUI();
+        };
+        DOM.hiddenPlayersContainer.appendChild(video);
+        activePlayers[asset.id] = video;
+    } else if (asset.type === 'audio') {
+        const audio = document.createElement('audio');
+        audio.src = asset.url;
+        audio.preload = 'metadata';
+
+        audio.onloadedmetadata = () => {
+            asset.duration = audio.duration || asset.duration || 10.0;
+            updateAssetListUI();
+            updateTimelineClipsUI();
+        };
+        audio.onerror = () => {
+            console.warn('[LookVideoEditor] 오디오 프리뷰 로드 실패:', asset.name);
+            asset.isPreviewDisabled = true;
+        };
+        DOM.hiddenPlayersContainer.appendChild(audio);
+        activePlayers[asset.id] = audio;
+    }
+}
+
 function addReelToEditor(reel) {
-    // 중복 체크: 같은 소스 파일이 이미 라이브러리에 있으면 타임라인에만 추가
+    // 중복 체크: 같은 소스 파일이 이미 라이브러리에 있으면 재사용
     let asset = STATE.assets.find(a => a.localPath && a.localPath.toLowerCase() === reel.source.toLowerCase());
 
     if (!asset) {
@@ -762,29 +806,13 @@ function addReelToEditor(reel) {
             localPath: reel.source
         };
         STATE.assets.push(asset);
-
-        // 숨김 플레이어 생성 (프리뷰 메타데이터/프레임 로드)
-        const video = document.createElement('video');
-        video.src = reel.url;
-        video.preload = 'auto';
-        video.muted = true;
-        video.playsInline = true;
-        video.crossOrigin = 'anonymous';
-
-        video.onloadedmetadata = () => {
-            asset.duration = video.duration || 10.0;
-            updateAssetListUI();
-            updateTimelineClipsUI();
-            renderPreview();
-        };
-        video.onerror = () => {
-            console.warn('[LookVideoEditor] 릴스 프리뷰 로드 실패:', reel.name);
-            asset.isPreviewDisabled = true;
-            updateAssetListUI();
-        };
-        DOM.hiddenPlayersContainer.appendChild(video);
-        activePlayers[asset.id] = video;
+    } else if (!asset.url) {
+        // 프로젝트 로드 등으로 URL이 없는 에셋 → 현재 서버의 릴스 경로로 재연결
+        asset.url = reel.url;
     }
+
+    // 숨김 플레이어 생성 (없는 경우만)
+    createHiddenPlayerForAsset(asset);
 
     // 타임라인 끝에 연속 배치
     addAssetToTimeline(asset.id, 'video1', getProjectContentDuration());
@@ -2613,7 +2641,8 @@ function saveProjectFile() {
         name: a.name,
         type: a.type,
         duration: a.duration,
-        localPath: a.localPath
+        localPath: a.localPath,
+        url: a.url || null   // 릴스 API URL — 서버 모드에서 로드 직후 프리뷰 자동 복구용
     }));
 
     const projectData = {
@@ -2624,7 +2653,8 @@ function saveProjectFile() {
         outputWidth: STATE.outputWidth,
         outputHeight: STATE.outputHeight,
         outputFps: STATE.outputFps,
-        encoder: STATE.encoder
+        encoder: STATE.encoder,
+        reelsFolder: currentReelsFolder   // 릴스 불러오기에서 선택한 의류 폴더
     };
 
     const blob = new Blob([JSON.stringify(projectData, null, 4)], { type: 'application/json' });
@@ -2653,6 +2683,10 @@ function loadProjectFile(e) {
                 return;
             }
 
+            // 기존 미디어 플레이어 정리 후 교체
+            DOM.hiddenPlayersContainer.innerHTML = '';
+            Object.keys(activePlayers).forEach(k => delete activePlayers[k]);
+
             STATE.clips = data.clips.map(c => ({
                 ...c,
                 speed: c.speed || 1.0
@@ -2672,13 +2706,23 @@ function loadProjectFile(e) {
             if (DOM.projectEncoder) {
                 DOM.projectEncoder.value = STATE.encoder;
             }
-            
+
+            // 릴스 불러오기의 의류 폴더 선택 복원
+            currentReelsFolder = data.reelsFolder || '';
+            renderReelsFolderSelect();
+            renderReelsGrid();
+
             STATE.assets = data.assets.map(a => ({
                 ...a,
-                url: null,
+                url: a.url || null,   // 릴스 API URL 유지 → 서버 실행 중이면 프리뷰 자동 복구
                 file: null
             }));
-            
+
+            // URL이 있는 에셋은 숨김 플레이어 자동 재생성 (프리뷰 즉시 복구)
+            STATE.assets.forEach(asset => {
+                if (asset.url) createHiddenPlayerForAsset(asset);
+            });
+
             updatePreviewResolution();
             STATE.selectedClipId = null;
             selectClip(null);
@@ -2687,7 +2731,9 @@ function loadProjectFile(e) {
             recalculateTotalDuration();
             renderPreview();
 
-            showMediaReconnectModal();
+            // 프리뷰 URL이 없는 에셋이 있을 때만 재연결 안내
+            const needsReconnect = STATE.assets.some(a => (a.type === 'video' || a.type === 'audio') && !a.url);
+            if (needsReconnect) showMediaReconnectModal();
             
         } catch (err) {
             console.error("JSON 파싱 에러:", err);
@@ -2713,14 +2759,14 @@ function showMediaReconnectModal() {
             </div>
             <div class="modal-body">
                 <p>프로젝트 설정을 성공적으로 불러왔습니다!</p>
-                <p style="margin-top: 8px;">브라우저의 보안 제한으로 인해 비디오/오디오 미리보기를 활성화하려면, <strong>프로젝트에 사용된 미디어 파일들을 다시 한 번 선택</strong>해 주셔야 합니다.</p>
+                <p style="margin-top: 8px;">일부 미디어의 미리보기가 비활성화되어 있습니다. <strong>릴스 불러오기에서 해당 영상을 다시 추가</strong>하거나 BGM/스티커 파일을 다시 선택해 주세요.</p>
                 <div class="highlight-group" style="margin-top: 12px;">
                     <i class="fa-solid fa-circle-info"></i> 로컬 FFmpeg 렌더링 경로와 편집했던 타임라인 클립 정보는 그대로 유지됩니다.
                 </div>
             </div>
             <div class="modal-footer">
                 <button id="modal-btn-cancel" class="btn btn-secondary">나중에</button>
-                <button id="modal-btn-select" class="btn btn-primary"><i class="fa-solid fa-file-video"></i> 미디어 파일 선택</button>
+                <button id="modal-btn-select" class="btn btn-primary"><i class="fa-solid fa-file-audio"></i> BGM/스티커 파일 선택</button>
             </div>
         </div>
     `;
