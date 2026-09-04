@@ -354,7 +354,12 @@ function generateFFmpegCommand(projectState) {
     }
     
     const filterString = filterComplex.join(";");
-    const outputFilename = `output\\rendered_${formatDateForFilename(new Date())}.mp4`;
+    // 출력 경로: 릴스 폴더 선택 시 samples/{폴더}/reels/에 저장, 아니면 기존 output/
+    const reelsFolder = String(projectState.reelsFolder || '');
+    const safeFolder = /^[\w가-힣\-_]+$/.test(reelsFolder) ? reelsFolder : '';
+    const outputFilename = safeFolder
+        ? `..\\samples\\${safeFolder}\\reels\\rendered_${formatDateForFilename(new Date())}.mp4`
+        : `output\\rendered_${formatDateForFilename(new Date())}.mp4`;
     
     // 인코더 플래그 결정 (GPU NVENC vs CPU libx264)
     let videoCodecOption = "-c:v libx264 -preset medium -crf 20";

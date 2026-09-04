@@ -2051,7 +2051,8 @@ async function startDirectRendering() {
         outputWidth: STATE.outputWidth,
         outputHeight: STATE.outputHeight,
         outputFps: STATE.outputFps,
-        encoder: STATE.encoder || 'h264_nvenc'
+        encoder: STATE.encoder || 'h264_nvenc',
+        reelsFolder: currentReelsFolder
     });
 
     if (result.error) {
@@ -2144,7 +2145,7 @@ async function runLocalServerRender(initialParams) {
         await ensureAssetsUploadedToLocalServer();
 
         // 2. 동기화된 최신 localPath 로 FFmpeg 파라미터 재생성
-        const renderParams = generateFFmpegCommand(STATE);
+        const renderParams = generateFFmpegCommand({ ...STATE, reelsFolder: currentReelsFolder });
         if (renderParams.error) {
             throw new Error(renderParams.error);
         }
@@ -2476,12 +2477,15 @@ function updateRenderModalUI(data) {
             if (data.isBrowserBlob) {
                 videoEl.src = data.blobUrl;
             } else {
-                const cleanPath = (data.outputFile || STATE.activeRenderOutput || '').replace(/\\/g, '/');
+                const cleanPath = (data.outputUrl || data.outputFile || STATE.activeRenderOutput || '').replace(/\\/g, '/');
                 videoEl.src = (cleanPath.startsWith('/') ? cleanPath : `/${cleanPath}`) + `?t=${Date.now()}`;
             }
             videoEl.load();
             videoEl.play().catch(() => {}); // 자동 재생 시도
         }
+
+        // 렌더 완료 후 릴스 목록 갱신 (선택 폴더 reels에 저장된 새 결과물 반영)
+        loadReels();
         
         if (data.isBrowserBlob) {
             DOM.btnDownloadRenderedVideo.classList.remove('hide');
@@ -2499,7 +2503,7 @@ function updateRenderModalUI(data) {
             DOM.btnDownloadRenderedVideo.classList.remove('hide');
             DOM.btnDownloadRenderedVideo.onclick = () => {
                 const a = document.createElement('a');
-                const cleanPath = (data.outputFile || STATE.activeRenderOutput || '').replace(/\\/g, '/');
+                const cleanPath = (data.outputUrl || data.outputFile || STATE.activeRenderOutput || '').replace(/\\/g, '/');
                 a.href = cleanPath.startsWith('/') ? cleanPath : `/${cleanPath}`;
                 a.download = (data.outputFile || 'rendered_video.mp4').split(/[\\\/]/).pop();
                 document.body.appendChild(a);

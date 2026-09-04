@@ -131,6 +131,16 @@ const server = http.createServer((req, res) => {
         if (renderState.isRendering && renderState.startTime > 0) {
             renderState.elapsedTime = formatElapsed(Date.now() - renderState.startTime);
         }
+        // 결과물 스트리밍 URL 계산 (에디터 내부면 정적 경로, reels 등 외부면 /api/reels-file)
+        if (renderState.outputFile) {
+            const resolvedOut = path.resolve(ROOT_DIR, renderState.outputFile);
+            const relToRoot = path.relative(ROOT_DIR, resolvedOut);
+            if (relToRoot && !relToRoot.startsWith('..') && !path.isAbsolute(relToRoot)) {
+                renderState.outputUrl = '/' + relToRoot.replace(/\\/g, '/');
+            } else {
+                renderState.outputUrl = `/api/reels-file?path=${encodeURIComponent(resolvedOut)}`;
+            }
+        }
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify(renderState));
         return;
@@ -184,12 +194,6 @@ const server = http.createServer((req, res) => {
                     return;
                 }
 
-                // output 디렉터리 확인 및 생성
-                const outputDir = path.join(ROOT_DIR, 'output');
-                if (!fs.existsSync(outputDir)) {
-                    fs.mkdirSync(outputDir, { recursive: true });
-                }
-
                 // 상태 초기화
                 renderState = {
                     isRendering: true,
@@ -204,6 +208,24 @@ const server = http.createServer((req, res) => {
                     startTime: Date.now(),
                     elapsedTime: "00:00"
                 };
+
+                // 출력 경로 검증 (프로젝트 루트 밖 경로 차단)
+                const resolvedOutput = path.resolve(ROOT_DIR, renderState.outputFile);
+                const outputAllowed = [PROJECT_ROOT, ROOT_DIR].some(root =>
+                    resolvedOutput === root || resolvedOutput.startsWith(root + path.sep)
+                );
+                if (!outputAllowed) {
+                    renderState.isRendering = false;
+                    res.writeHead(403, { 'Content-Type': 'application/json' });
+                    res.end(JSON.stringify({ error: '출력 경로가 허용 범위를 벗어났습니다.' }));
+                    return;
+                }
+
+                // 출력 경로의 상위 디렉터리 확인 및 생성 (samples/{폴더}/reels 저장 지원)
+                const outputParent = path.dirname(resolvedOutput);
+                if (!fs.existsSync(outputParent)) {
+                    fs.mkdirSync(outputParent, { recursive: true });
+                }
 
                 const ffmpegBin = getFFmpegBinary();
                 console.log(`[LookVideoEditor] 렌더링 시작: ${ffmpegBin}`);
