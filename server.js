@@ -460,18 +460,37 @@ const server = http.createServer((req, res) => {
         try {
             // 1) samples/{상품}/reels + samples/{상품}/lookbook_reels
             const samplesDir = path.join(PROJECT_ROOT, 'samples');
+            const folders = new Map(); // 폴더명 -> { name, displayName, count }
             if (fs.existsSync(samplesDir)) {
                 for (const productDir of fs.readdirSync(samplesDir)) {
                     const productPath = path.join(samplesDir, productDir);
                     if (!fs.statSync(productPath).isDirectory()) continue;
+                    let count = 0;
                     for (const sub of ['reels', 'lookbook_reels']) {
                         const subPath = path.join(productPath, sub);
                         if (!fs.existsSync(subPath)) continue;
                         for (const f of fs.readdirSync(subPath)) {
                             if (!VIDEO_EXTS.has(path.extname(f).toLowerCase())) continue;
                             const filePath = path.join(subPath, f);
-                            if (fs.statSync(filePath).isFile()) addReel(filePath, productDir, 'samples');
+                            if (fs.statSync(filePath).isFile()) {
+                                addReel(filePath, productDir, 'samples');
+                                count++;
+                            }
                         }
+                    }
+                    // 릴스가 있는 폴더만 셀렉트에 노출 (spec.json에서 상품명/카테고리 읽기)
+                    if (count > 0) {
+                        let displayName = productDir;
+                        let category = '';
+                        try {
+                            const specPath = path.join(productPath, 'spec.json');
+                            if (fs.existsSync(specPath)) {
+                                const spec = JSON.parse(fs.readFileSync(specPath, 'utf-8'));
+                                if (spec && spec.name) displayName = spec.name;
+                                if (spec && spec.category) category = spec.category;
+                            }
+                        } catch (e) {}
+                        folders.set(productDir, { name: productDir, displayName, category, count });
                     }
                 }
             }
@@ -489,14 +508,17 @@ const server = http.createServer((req, res) => {
                     }
                 }
             }
+
+            reels.sort((a, b) => b.mtime - a.mtime);
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ success: true, folders: Array.from(folders.values()), reels }));
+            return;
         } catch (e) {
             console.error('[LookVideoEditor] 릴스 스캔 실패:', e.message);
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ success: true, folders: [], reels: [] }));
+            return;
         }
-
-        reels.sort((a, b) => b.mtime - a.mtime);
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ success: true, reels }));
-        return;
     }
 
     // 8. 릴스/외부 파일 서빙 (프로젝트 루트 내 경로만 허용, HTTP 206 Range 지원)

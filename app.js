@@ -632,6 +632,8 @@ function updateAssetListUI() {
 
 // ── 릴스 불러오기 (vTonSales 릴스 저장 폴더 연동) ─────────────────────────
 let reelsList = [];
+let reelsFolders = [];
+let currentReelsFolder = '';   // '' = 전체 릴스, 그 외 = 의류 폴더명
 
 function escapeHtml(str) {
     return String(str).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -643,25 +645,65 @@ async function loadReels() {
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const data = await res.json();
         reelsList = data.reels || [];
+        reelsFolders = data.folders || [];
     } catch (e) {
         // 서버 미가동(파일 단독 열기 모드) 시 조용히 실패
         console.warn('[LookVideoEditor] 릴스 목록 로드 실패:', e.message);
         reelsList = [];
+        reelsFolders = [];
     }
+    renderReelsFolderSelect();
     renderReelsGrid();
+}
+
+// 의류 폴더 선택 셀렉트 갱신 (SNSReelsPostor STEP 1 패턴)
+function renderReelsFolderSelect() {
+    const sel = document.getElementById('reels-folder-select');
+    if (!sel) return;
+
+    const prevValue = currentReelsFolder;
+    sel.innerHTML = '';
+
+    const allOpt = document.createElement('option');
+    allOpt.value = '';
+    allOpt.textContent = `전체 릴스 (${reelsList.length})`;
+    sel.appendChild(allOpt);
+
+    reelsFolders.forEach(f => {
+        const opt = document.createElement('option');
+        opt.value = f.name;
+        const label = f.displayName && f.displayName !== f.name
+            ? `${f.name} · ${f.displayName}`
+            : f.name;
+        opt.textContent = `${label}${f.category ? ' · ' + f.category : ''} (${f.count})`;
+        sel.appendChild(opt);
+    });
+
+    // 새로고침 후에도 기존 선택 유지 (삭제된 폴더면 전체로 복귀)
+    if (prevValue && reelsFolders.some(f => f.name === prevValue)) {
+        sel.value = prevValue;
+    } else {
+        currentReelsFolder = '';
+    }
 }
 
 function renderReelsGrid() {
     const grid = document.getElementById('reels-grid');
     if (!grid) return;
 
-    if (reelsList.length === 0) {
-        grid.innerHTML = '<div class="empty-list-msg">릴스가 없습니다.<br>(룩북 스튜디오에서 릴스 생성 후 새로고침)</div>';
+    const list = currentReelsFolder
+        ? reelsList.filter(r => r.product === currentReelsFolder)
+        : reelsList;
+
+    if (list.length === 0) {
+        grid.innerHTML = currentReelsFolder
+            ? '<div class="empty-list-msg">이 폴더에는 릴스가 없습니다.</div>'
+            : '<div class="empty-list-msg">릴스가 없습니다.<br>(룩북 스튜디오에서 릴스 생성 후 새로고침)</div>';
         return;
     }
 
     grid.innerHTML = '';
-    reelsList.forEach(reel => {
+    list.forEach(reel => {
         const card = document.createElement('div');
         card.className = 'reel-card';
         card.title = reel.name;
@@ -757,6 +799,13 @@ function initReelsLoader() {
     const refreshBtn = document.getElementById('btn-refresh-reels');
     if (refreshBtn) {
         refreshBtn.addEventListener('click', loadReels);
+    }
+    const folderSelect = document.getElementById('reels-folder-select');
+    if (folderSelect) {
+        folderSelect.addEventListener('change', () => {
+            currentReelsFolder = folderSelect.value;
+            renderReelsGrid();
+        });
     }
     loadReels();
 }

@@ -1497,6 +1497,37 @@ body.resizing-row {
     color: var(--accent);
 }
 
+.reels-folder-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-bottom: 8px;
+}
+
+.reels-folder-row > i {
+    color: var(--accent);
+    font-size: 12px;
+}
+
+.reels-folder-select {
+    flex: 1;
+    min-width: 0;
+    background: #09090b;
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    padding: 4px 6px;
+    color: var(--text-main);
+    font-size: 11px;
+    outline: none;
+    cursor: pointer;
+    transition: border 0.15s ease;
+}
+
+.reels-folder-select:focus,
+.reels-folder-select:hover {
+    border-color: var(--primary);
+}
+
 .reels-grid {
     display: grid;
     grid-template-columns: 1fr 1fr;
