@@ -117,7 +117,6 @@ const DOM = {
     propImgHeight: document.getElementById('prop-img-height'),
     propTextX: document.getElementById('prop-text-x'),
     propTextY: document.getElementById('prop-text-y'),
-    btnApplyProperties: document.getElementById('btn-apply-properties'),
     propVideoEffectsList: document.getElementById('prop-video-effects-list'),
     propEffectFadeOutGroup: document.getElementById('prop-effect-fade-out-group'),
     propFadeOutDuration: document.getElementById('prop-fade-out-duration'),
@@ -395,7 +394,6 @@ function setupEventListeners() {
         });
     }
 
-    DOM.btnApplyProperties.addEventListener('click', applyPropertiesChanges);
     DOM.btnDeleteClip.addEventListener('click', () => {
         if (STATE.selectedClipId) {
             deleteClip(STATE.selectedClipId);
@@ -1287,12 +1285,6 @@ function updateTimelineClipsUIOnlyPosition() {
             }
         }
     });
-}
-
-function applyPropertiesChanges() {
-    updateTimelineClipsUI();
-    recalculateTotalDuration();
-    renderPreview();
 }
 
 // 클립 삭제
