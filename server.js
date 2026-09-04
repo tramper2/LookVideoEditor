@@ -478,20 +478,19 @@ const server = http.createServer((req, res) => {
                             }
                         }
                     }
-                    // 릴스가 있는 폴더만 셀렉트에 노출 (spec.json에서 상품명/카테고리 읽기)
-                    if (count > 0) {
-                        let displayName = productDir;
-                        let category = '';
-                        try {
-                            const specPath = path.join(productPath, 'spec.json');
-                            if (fs.existsSync(specPath)) {
-                                const spec = JSON.parse(fs.readFileSync(specPath, 'utf-8'));
-                                if (spec && spec.name) displayName = spec.name;
-                                if (spec && spec.category) category = spec.category;
-                            }
-                        } catch (e) {}
-                        folders.set(productDir, { name: productDir, displayName, category, count });
-                    }
+                    // 릴스 유무와 관계없이 모든 의류 폴더를 셀렉트에 노출
+                    // (SNSReelsPostor STEP 1 패턴, spec.json에서 상품명/카테고리 읽기)
+                    let displayName = productDir;
+                    let category = '';
+                    try {
+                        const specPath = path.join(productPath, 'spec.json');
+                        if (fs.existsSync(specPath)) {
+                            const spec = JSON.parse(fs.readFileSync(specPath, 'utf-8'));
+                            if (spec && spec.name) displayName = spec.name;
+                            if (spec && spec.category) category = spec.category;
+                        }
+                    } catch (e) {}
+                    folders.set(productDir, { name: productDir, displayName, category, count });
                 }
             }
             // 2) 생성기 outputs/reels 2곳
@@ -510,8 +509,9 @@ const server = http.createServer((req, res) => {
             }
 
             reels.sort((a, b) => b.mtime - a.mtime);
+            const folderList = Array.from(folders.values()).sort((a, b) => a.name.localeCompare(b.name));
             res.writeHead(200, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify({ success: true, folders: Array.from(folders.values()), reels }));
+            res.end(JSON.stringify({ success: true, folders: folderList, reels }));
             return;
         } catch (e) {
             console.error('[LookVideoEditor] 릴스 스캔 실패:', e.message);

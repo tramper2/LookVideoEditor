@@ -675,7 +675,7 @@ function renderReelsFolderSelect() {
         const label = f.displayName && f.displayName !== f.name
             ? `${f.name} · ${f.displayName}`
             : f.name;
-        opt.textContent = `${label}${f.category ? ' · ' + f.category : ''} (${f.count})`;
+        opt.textContent = `${label}${f.category ? ' · ' + f.category : ''} (${f.count > 0 ? f.count : '릴스 없음'})`;
         sel.appendChild(opt);
     });
 
