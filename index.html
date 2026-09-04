@@ -74,14 +74,8 @@
                     <h2><i class="fa-solid fa-photo-film"></i> 미디어 라이브러리</h2>
                 </div>
                 <div class="panel-body">
-                    <!-- 미디어 임포트 영역 -->
-                    <div class="media-importer" id="media-dropzone">
-                        <i class="fa-solid fa-cloud-arrow-up cloud-icon"></i>
-                        <p>비디오, 오디오 및 이미지 가져오기</p>
-                        <span class="sub-text">파일을 끌어다 놓거나 아래 버튼 클릭</span>
-                        <input type="file" id="input-media" multiple accept="video/*,audio/*,image/png,image/jpeg" style="display:none;">
-                        <button class="btn btn-sm btn-outline" onclick="document.getElementById('input-media').click()">파일 선택</button>
-                    </div>
+                    <!-- BGM/스티커 파일 추가용 숨김 input (영상은 릴스 폴더 선택으로 로드) -->
+                    <input type="file" id="input-media" multiple accept="audio/*,image/png,image/jpeg" style="display:none;">
 
                     <!-- 릴스 불러오기 (룩북 스튜디오 생성 영상) -->
                     <div class="reels-import-section">
@@ -102,7 +96,12 @@
 
                     <!-- 소스 에셋 목록 -->
                     <div class="asset-list-container">
-                        <h3>가져온 미디어 목록</h3>
+                        <div class="asset-list-header">
+                            <h3>가져온 미디어 목록</h3>
+                            <button id="btn-add-bgm-sticker" class="btn btn-sm btn-outline" title="BGM(오디오) 또는 스티커 이미지(PNG/JPG) 파일 추가">
+                                <i class="fa-solid fa-plus"></i> BGM/스티커
+                            </button>
+                        </div>
                         <ul id="asset-list" class="asset-list">
                             <!-- JS를 통해 동적 생성 -->
                             <li class="empty-list-msg">미디어 파일이 없습니다.</li>

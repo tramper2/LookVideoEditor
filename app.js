@@ -44,7 +44,7 @@ const DOM = {
     btnRenderVideo: document.getElementById('btn-render-video'),
     
     inputMedia: document.getElementById('input-media'),
-    mediaDropzone: document.getElementById('media-dropzone'),
+    btnAddBgmSticker: document.getElementById('btn-add-bgm-sticker'),
     assetList: document.getElementById('asset-list'),
     
     previewCanvas: document.getElementById('preview-canvas'),
@@ -219,21 +219,10 @@ function updatePreviewResolution() {
 }
 
 function setupEventListeners() {
-    // 미디어 가져오기 이벤트
-    DOM.mediaDropzone.addEventListener('dragover', (e) => {
-        e.preventDefault();
-        DOM.mediaDropzone.classList.add('dragover');
-    });
-    DOM.mediaDropzone.addEventListener('dragleave', () => {
-        DOM.mediaDropzone.classList.remove('dragover');
-    });
-    DOM.mediaDropzone.addEventListener('drop', (e) => {
-        e.preventDefault();
-        DOM.mediaDropzone.classList.remove('dragover');
-        if (e.dataTransfer.files.length > 0) {
-            handleMediaImport(e.dataTransfer.files);
-        }
-    });
+    // 미디어 가져오기 이벤트 (영상은 릴스 폴더 선택으로 로드, BGM/스티커만 파일 선택)
+    if (DOM.btnAddBgmSticker) {
+        DOM.btnAddBgmSticker.addEventListener('click', () => DOM.inputMedia.click());
+    }
     DOM.inputMedia.addEventListener('change', (e) => {
         if (e.target.files.length > 0) {
             handleMediaImport(e.target.files);

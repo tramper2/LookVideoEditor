@@ -340,49 +340,15 @@ body {
     max-width: 600px;
 }
 
-.media-importer {
-    border: 2px dashed rgba(255, 255, 255, 0.15);
-    border-radius: 8px;
-    padding: 20px 12px;
-    text-align: center;
-    background: rgba(0, 0, 0, 0.2);
-    cursor: pointer;
-    transition: all 0.2s ease;
-    margin-bottom: 16px;
-}
-
-.media-importer.dragover,
-.media-importer:hover {
-    border-color: #ff416c;
-    background: rgba(255, 65, 108, 0.05);
-}
-
-.media-importer .cloud-icon {
-    font-size: 2rem;
-    color: var(--text-muted);
-    margin-bottom: 8px;
-    transition: transform 0.2s ease;
-}
-
-.media-importer:hover .cloud-icon {
-    transform: translateY(-3px);
-    color: #ff416c;
-}
-
-.media-importer p {
-    font-size: 0.8rem;
-    font-weight: 500;
-    margin-bottom: 4px;
-}
-
-.media-importer .sub-text {
-    font-size: 0.68rem;
-    color: var(--text-muted);
-    display: block;
+/* Asset List */
+.asset-list-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
     margin-bottom: 10px;
 }
 
-/* Asset List */
+.asset-list-header h3,
 .asset-list-container h3,
 .effects-container h3 {
     font-size: 0.72rem;
@@ -394,6 +360,10 @@ body {
     display: flex;
     align-items: center;
     gap: 6px;
+}
+
+.asset-list-header h3 {
+    margin-bottom: 0;
 }
 
 .asset-list {
