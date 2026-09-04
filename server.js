@@ -402,9 +402,10 @@ const server = http.createServer((req, res) => {
             console.log(`[LookVideoEditor] 저장 폴더 열기 요청: ${fullPath}`);
 
             if (fs.existsSync(fullPath) && fs.statSync(fullPath).isFile()) {
-                spawn('cmd.exe', ['/c', 'start', 'explorer.exe', `/select,"${fullPath}"`], { detached: true, stdio: 'ignore' }).unref();
+                // 탐색기에서 결과 파일 선택 (cmd start의 내장 따옴표 파싱 문제 회피: explorer.exe 직접 실행)
+                spawn('explorer.exe', [`/select,${fullPath}`], { detached: true, stdio: 'ignore' }).unref();
             } else {
-                spawn('cmd.exe', ['/c', 'start', 'explorer.exe', outputDir], { detached: true, stdio: 'ignore' }).unref();
+                spawn('explorer.exe', [outputDir], { detached: true, stdio: 'ignore' }).unref();
             }
 
             res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -441,8 +442,8 @@ const server = http.createServer((req, res) => {
             console.log(`[LookVideoEditor] 결과 영상 재생 요청: ${fullPath}`);
 
             if (fullPath && fs.existsSync(fullPath)) {
-                // Windows 기본 미디어 플레이어로 포그라운드 실행
-                spawn('cmd.exe', ['/c', 'start', '""', fullPath], { detached: true, stdio: 'ignore' }).unref();
+                // Windows 기본 미디어 플레이어로 포그라운드 실행 (경로 따옴표 처리로 공백 안전)
+                spawn('cmd.exe', ['/c', 'start', '""', `"${fullPath}"`], { detached: true, stdio: 'ignore' }).unref();
                 res.writeHead(200, { 'Content-Type': 'application/json' });
                 res.end(JSON.stringify({ status: 'opened', file: fullPath }));
             } else {

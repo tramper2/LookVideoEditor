@@ -2217,6 +2217,7 @@ async function pollRenderProgress() {
                 heading: "렌더링 완료!",
                 desc: "성공적으로 고화질 비디오 렌더링이 완료되었습니다.",
                 outputFile: data.outputFile || STATE.activeRenderOutput,
+                outputUrl: data.outputUrl,   // reels 폴더 저장 결과물의 스트리밍 URL
                 elapsed: data.elapsedTime,
                 status: "completed"
             });
