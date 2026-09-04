@@ -306,20 +306,36 @@ function generateFFmpegCommand(projectState) {
         const scale = outW / 1280;
         const fontSize = Math.round((clip.textSize || 36) * scale);
         const fontColor = clip.textColor || "#ffffff";
+        const opacityVal = (clip.textOpacity !== undefined ? clip.textOpacity : 100) / 100;
+        const fontColorWithAlpha = `${fontColor}@${opacityVal.toFixed(2)}`;
         const fontPath = getFFmpegFontPath(clip.textFont || 'malgun', clip.textFontCustom);
-        
+
+        // 문자 효과 (외곽선 / 그림자)
+        let textEffectOpts = '';
+        const textEffect = clip.textEffect || 'none';
+        if (textEffect === 'outline') {
+            textEffectOpts = ':borderw=3:bordercolor=black';
+        } else if (textEffect === 'shadow') {
+            textEffectOpts = ':shadowx=2:shadowy=2:shadowcolor=black@0.8';
+        } else if (textEffect === 'outline_shadow') {
+            textEffectOpts = ':borderw=3:bordercolor=black:shadowx=2:shadowy=2:shadowcolor=black@0.8';
+        }
+
+        // 배경 상자 (기존 동작 유지: 사용이 기본)
+        const boxOpts = clip.textBgbox === 'off' ? '' : ':box=1:boxcolor=black@0.4';
+
         // 特수문자 escape
         let textEscaped = (clip.text || '')
             .replace(/\\/g, '\\\\')
             .replace(/'/g, "\\'")
             .replace(/:/g, '\\:')
             .replace(/%/g, '\\%');
-            
+
         let textXExpr = clip.x === 640 ? "(w-text_w)/2" : `${Math.round(clip.x * (outW / 1280))}`;
         let textYExpr = `${Math.round(clip.y * (outH / 720))}`;
-        
+
         const nextVideoNode = `v_text_overlay_${i}`;
-        filterComplex.push(`[${currentVideoNode}]drawtext=text='${textEscaped}':x=${textXExpr}:y=${textYExpr}:fontsize=${fontSize}:fontcolor=${fontColor}:box=1:boxcolor=black@0.4:fontfile='${fontPath}':enable='between(t,${clip.timelineStart.toFixed(2)},${endTimeline.toFixed(2)})'[${nextVideoNode}]`);
+        filterComplex.push(`[${currentVideoNode}]drawtext=text='${textEscaped}':x=${textXExpr}:y=${textYExpr}:fontsize=${fontSize}:fontcolor=${fontColorWithAlpha}${textEffectOpts}${boxOpts}:fontfile='${fontPath}':enable='between(t,${clip.timelineStart.toFixed(2)},${endTimeline.toFixed(2)})'[${nextVideoNode}]`);
         currentVideoNode = nextVideoNode;
     });
 

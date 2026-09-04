@@ -106,6 +106,10 @@ const DOM = {
     propTextContent: document.getElementById('prop-text-content'),
     propTextSize: document.getElementById('prop-text-size'),
     propTextColor: document.getElementById('prop-text-color'),
+    propTextOpacity: document.getElementById('prop-text-opacity'),
+    propTextOpacityLabel: document.getElementById('prop-text-opacity-label'),
+    propTextEffect: document.getElementById('prop-text-effect'),
+    propTextBgbox: document.getElementById('prop-text-bgbox'),
     propTextFont: document.getElementById('prop-text-font'),
     propTextFontCustomGroup: document.getElementById('prop-text-font-custom-group'),
     propTextFontCustom: document.getElementById('prop-text-font-custom'),
@@ -341,6 +345,7 @@ function setupEventListeners() {
         DOM.propVolume, DOM.propSpeed, DOM.propPipWidth, DOM.propPipHeight,
         DOM.propPipX, DOM.propPipY, DOM.propAudioVolume,
         DOM.propTextContent, DOM.propTextSize, DOM.propTextColor,
+        DOM.propTextOpacity, DOM.propTextEffect, DOM.propTextBgbox,
         DOM.propTextFont, DOM.propTextFontCustom,
         DOM.propImgWidth, DOM.propImgHeight, DOM.propTextX, DOM.propTextY,
         DOM.propFadeOutDuration
@@ -628,6 +633,17 @@ function escapeHtml(str) {
     return String(str).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 }
 
+// #rrggbb + 투명도(%) → rgba() 문자열 (자막 프리뷰용)
+function hexToRgba(hex, opacityPercent) {
+    const m = String(hex).trim().match(/^#?([0-9a-f]{6})$/i);
+    if (!m) return hex;
+    const n = parseInt(m[1], 16);
+    const r = (n >> 16) & 255, g = (n >> 8) & 255, b = n & 255;
+    const pct = (opacityPercent === undefined || isNaN(opacityPercent)) ? 100 : opacityPercent;
+    const a = Math.max(0, Math.min(100, pct)) / 100;
+    return `rgba(${r},${g},${b},${a.toFixed(2)})`;
+}
+
 async function loadReels() {
     try {
         const res = await fetch('/api/reels/list', { cache: 'no-store' });
@@ -876,6 +892,9 @@ function addTextOverlayClip() {
         text: '새로운 자막 텍스트',
         textSize: 36,
         textColor: '#ffffff',
+        textOpacity: 100,
+        textEffect: 'none',
+        textBgbox: 'on',
         textFont: 'malgun',
         textFontCustom: '',
         x: 640, // 가로 중앙 (1280x720 기준)
@@ -1098,6 +1117,10 @@ function selectClip(clipId) {
             DOM.propTextContent.value = clip.text || '';
             DOM.propTextSize.value = clip.textSize || 36;
             DOM.propTextColor.value = clip.textColor || '#ffffff';
+            DOM.propTextOpacity.value = clip.textOpacity !== undefined ? clip.textOpacity : 100;
+            if (DOM.propTextOpacityLabel) DOM.propTextOpacityLabel.textContent = `${DOM.propTextOpacity.value}%`;
+            DOM.propTextEffect.value = clip.textEffect || 'none';
+            DOM.propTextBgbox.value = clip.textBgbox || 'on';
             DOM.propTextFont.value = clip.textFont || 'malgun';
             DOM.propTextFontCustom.value = clip.textFontCustom || '';
             if (clip.textFont === 'custom') {
@@ -1205,8 +1228,13 @@ function updateSelectedClipFromInputs(e) {
             clip.text = DOM.propTextContent.value;
             clip.textSize = parseInt(DOM.propTextSize.value) || 36;
             clip.textColor = DOM.propTextColor.value;
+            clip.textOpacity = parseInt(DOM.propTextOpacity.value);
+            if (isNaN(clip.textOpacity)) clip.textOpacity = 100;
+            clip.textEffect = DOM.propTextEffect.value;
+            clip.textBgbox = DOM.propTextBgbox.value;
             clip.textFont = DOM.propTextFont.value;
             clip.textFontCustom = DOM.propTextFontCustom.value;
+            if (DOM.propTextOpacityLabel) DOM.propTextOpacityLabel.textContent = `${clip.textOpacity}%`;
         } else if (clip.overlayType === 'image') {
             clip.width = parseInt(DOM.propImgWidth.value) || 150;
             clip.height = parseInt(DOM.propImgHeight.value) || 150;
@@ -1725,20 +1753,34 @@ function renderPreview() {
             }
         } else if (clip.overlayType === 'text') {
             const scale = canvasW / 1280;
-            ctx.fillStyle = clip.textColor || '#ffffff';
+            ctx.fillStyle = hexToRgba(clip.textColor || '#ffffff', clip.textOpacity);
             const fontFamily = getCanvasFontFamily(clip.textFont);
             const fontSize = Math.round((clip.textSize || 36) * scale);
             ctx.font = `500 ${fontSize}px ${fontFamily}`;
-            ctx.shadowColor = 'rgba(0,0,0,0.8)';
-            ctx.shadowBlur = 6;
-            
+
+            const textEffect = clip.textEffect || 'none';
+            const hasShadow = textEffect === 'shadow' || textEffect === 'outline_shadow';
+            const hasOutline = textEffect === 'outline' || textEffect === 'outline_shadow';
+            if (hasShadow) {
+                ctx.shadowColor = 'rgba(0,0,0,0.8)';
+                ctx.shadowBlur = 6;
+            } else {
+                ctx.shadowBlur = 0;
+            }
+
             let textX = clip.x === 640 ? canvasW / 2 : (clip.x * (canvasW / 1280));
             let textY = clip.y * (canvasH / 720);
-            
+
             ctx.textAlign = clip.x === 640 ? 'center' : 'left';
             ctx.textBaseline = 'middle';
             ctx.fillText(clip.text || '', textX, textY);
-            
+
+            if (hasOutline) {
+                ctx.strokeStyle = 'rgba(0,0,0,0.9)';
+                ctx.lineWidth = Math.max(2, fontSize * 0.06);
+                ctx.strokeText(clip.text || '', textX, textY);
+            }
+
             ctx.shadowBlur = 0;
         }
     });
