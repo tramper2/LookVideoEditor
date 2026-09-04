@@ -1,0 +1,610 @@
+/**
+ * LookVideoEditor - Lightweight Local HTTP & FFmpeg Rendering Server
+ * 
+ * Node.js 내장 모듈(http, fs, path, child_process)만을 사용하여 별도의 npm install 없이
+ * 즉시 실행 가능하며, 웹 에디터 화면과 통신하여 로컬 FFmpeg 렌더링을 원클릭으로 수행합니다.
+ */
+
+const http = require('http');
+const fs = require('fs');
+const path = require('path');
+const { spawn, exec } = require('child_process');
+
+// 포트 결정: --port N / --port=N / 위치 인자 / PORT 환경변수 / 기본 3000 (start.bat 독립 실행 호환)
+function resolvePort() {
+    const args = process.argv.slice(2);
+    for (let i = 0; i < args.length; i++) {
+        if (args[i] === '--port' && args[i + 1]) return parseInt(args[i + 1], 10);
+        if (args[i].startsWith('--port=')) return parseInt(args[i].split('=')[1], 10);
+    }
+    const positional = args.find(a => /^\d+$/.test(a));
+    if (positional) return parseInt(positional, 10);
+    if (process.env.PORT) return parseInt(process.env.PORT, 10);
+    return 3000;
+}
+
+const PORT = resolvePort();
+const ROOT_DIR = __dirname;
+
+// vTonSales 프로젝트 루트 (릴스 저장 폴더 스캔용)
+const PROJECT_ROOT = path.resolve(ROOT_DIR, '..');
+const VIDEO_EXTS = new Set(['.mp4', '.mov', '.webm', '.avi', '.m4v']);
+
+// MIME 타입 매핑
+const MIME_TYPES = {
+    '.html': 'text/html; charset=utf-8',
+    '.css': 'text/css; charset=utf-8',
+    '.js': 'application/javascript; charset=utf-8',
+    '.json': 'application/json; charset=utf-8',
+    '.png': 'image/png',
+    '.jpg': 'image/jpeg',
+    '.jpeg': 'image/jpeg',
+    '.gif': 'image/gif',
+    '.svg': 'image/svg+xml',
+    '.mp4': 'video/mp4',
+    '.webm': 'video/webm',
+    '.mov': 'video/quicktime',
+    '.avi': 'video/x-msvideo',
+    '.m4v': 'video/x-m4v',
+    '.mp3': 'audio/mpeg',
+    '.wav': 'audio/wav',
+    '.webp': 'image/webp',
+    '.ico': 'image/x-icon'
+};
+
+// 렌더링 상태 관리
+let renderState = {
+    isRendering: false,
+    progress: 0,
+    currentTime: "00:00:00.00",
+    totalDuration: 0,
+    fps: "0",
+    speed: "0x",
+    status: "idle", // 'idle' | 'rendering' | 'completed' | 'error' | 'cancelled'
+    error: null,
+    outputFile: null,
+    startTime: 0,
+    elapsedTime: "00:00"
+};
+
+let currentFfmpegProcess = null;
+
+// 로컬 FFmpeg 바이너리 탐색
+function getFFmpegBinary() {
+    const localFfmpeg = path.join(ROOT_DIR, 'ffmpeg', 'ffmpeg.exe');
+    if (fs.existsSync(localFfmpeg)) {
+        return localFfmpeg;
+    }
+    return 'ffmpeg';
+}
+
+function parseTimeToSeconds(timeStr) {
+    if (!timeStr) return 0;
+    const parts = timeStr.split(':');
+    if (parts.length === 3) {
+        return parseFloat(parts[0]) * 3600 + parseFloat(parts[1]) * 60 + parseFloat(parts[2]);
+    }
+    return 0;
+}
+
+function formatElapsed(ms) {
+    const totalSec = Math.floor(ms / 1000);
+    const m = Math.floor(totalSec / 60);
+    const s = totalSec % 60;
+    return `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
+}
+
+const server = http.createServer((req, res) => {
+    // CORS 헤더 설정
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+
+    if (req.method === 'OPTIONS') {
+        res.writeHead(200);
+        res.end();
+        return;
+    }
+
+    const parsedUrl = new URL(req.url, `http://localhost:${PORT}`);
+    const pathname = parsedUrl.pathname;
+
+    // --- API 엔드포인트 ---
+
+    // 1. 서버 상태 확인
+    if (pathname === '/api/ping' && req.method === 'GET') {
+        const ffmpegBin = getFFmpegBinary();
+        const hasLocal = fs.existsSync(path.join(ROOT_DIR, 'ffmpeg', 'ffmpeg.exe'));
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+            status: 'ok',
+            server: 'LookVideoEditor Server',
+            hasLocalFFmpeg: hasLocal,
+            ffmpegBinary: ffmpegBin,
+            isRendering: renderState.isRendering
+        }));
+        return;
+    }
+
+    // 2. 렌더링 진행률 조회 (Polling / SSE 지원)
+    if (pathname === '/api/render/progress' && req.method === 'GET') {
+        if (renderState.isRendering && renderState.startTime > 0) {
+            renderState.elapsedTime = formatElapsed(Date.now() - renderState.startTime);
+        }
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(renderState));
+        return;
+    }
+
+    // 3. 미디어 파일 자동 업로드 및 동기화 (/api/upload?filename=...)
+    if (pathname === '/api/upload' && req.method === 'POST') {
+        const rawFilename = parsedUrl.searchParams.get('filename') || `media_${Date.now()}`;
+        const filename = path.basename(decodeURIComponent(rawFilename));
+        const sourceDir = path.join(ROOT_DIR, 'source');
+        if (!fs.existsSync(sourceDir)) {
+            fs.mkdirSync(sourceDir, { recursive: true });
+        }
+        const targetPath = path.join(sourceDir, filename);
+        const fileStream = fs.createWriteStream(targetPath);
+
+        req.pipe(fileStream);
+
+        fileStream.on('finish', () => {
+            console.log(`[LookVideoEditor] 소스 파일 업로드 완료: ${targetPath}`);
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ success: true, localPath: targetPath, filename: filename }));
+        });
+
+        fileStream.on('error', (err) => {
+            console.error(`[LookVideoEditor] 소스 파일 업로드 실패:`, err);
+            res.writeHead(500, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: err.message }));
+        });
+        return;
+    }
+
+    // 4. 렌더링 시작
+    if (pathname === '/api/render' && req.method === 'POST') {
+        if (renderState.isRendering) {
+            res.writeHead(400, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: '이미 다른 렌더링 작업이 진행 중입니다.' }));
+            return;
+        }
+
+        let body = '';
+        req.on('data', chunk => { body += chunk; });
+        req.on('end', () => {
+            try {
+                const data = JSON.parse(body);
+                const { command, outputFile, totalDuration, fps, rawInputs, filterComplex, mappedVideo, mappedAudio, encoder } = data;
+
+                if (!command && !rawInputs) {
+                    res.writeHead(400, { 'Content-Type': 'application/json' });
+                    res.end(JSON.stringify({ error: 'FFmpeg 렌더링 데이터가 제공되지 않았습니다.' }));
+                    return;
+                }
+
+                // output 디렉터리 확인 및 생성
+                const outputDir = path.join(ROOT_DIR, 'output');
+                if (!fs.existsSync(outputDir)) {
+                    fs.mkdirSync(outputDir, { recursive: true });
+                }
+
+                // 상태 초기화
+                renderState = {
+                    isRendering: true,
+                    progress: 0,
+                    currentTime: "00:00:00.00",
+                    totalDuration: totalDuration || 10,
+                    fps: String(fps || 30),
+                    speed: "0x",
+                    status: "rendering",
+                    error: null,
+                    outputFile: outputFile || path.join('output', `rendered_${Date.now()}.mp4`),
+                    startTime: Date.now(),
+                    elapsedTime: "00:00"
+                };
+
+                const ffmpegBin = getFFmpegBinary();
+                console.log(`[LookVideoEditor] 렌더링 시작: ${ffmpegBin}`);
+                console.log(`[LookVideoEditor] 출력 파일: ${renderState.outputFile}`);
+
+                let child;
+                const tempFilterPath = path.join(ROOT_DIR, `temp_filter_${Date.now()}.txt`);
+
+                if (rawInputs && filterComplex && mappedVideo && mappedAudio) {
+                    // 1. 최적의 안전 방식: -filter_complex_script 를 사용한 직접 spawn (Windows 쉘/따옴표 에러 100% 방지)
+                    const filterScriptContent = filterComplex.join(";\n");
+                    fs.writeFileSync(tempFilterPath, filterScriptContent, 'utf8');
+
+                    const args = ['-y'];
+                    rawInputs.forEach(inp => {
+                        if (inp.ss) args.push('-ss', inp.ss);
+                        if (inp.t) args.push('-t', inp.t);
+                        args.push('-i', inp.path);
+                    });
+
+                    args.push('-filter_complex_script', tempFilterPath);
+                    args.push('-map', mappedVideo);
+                    args.push('-map', mappedAudio);
+                    args.push('-t', parseFloat(totalDuration).toFixed(2));
+
+                    if (encoder === 'h264_nvenc') {
+                        args.push('-c:v', 'h264_nvenc', '-preset', 'p5', '-cq', '20');
+                    } else {
+                        args.push('-c:v', 'libx264', '-preset', 'medium', '-crf', '20');
+                    }
+
+                    args.push('-pix_fmt', 'yuv420p', '-r', String(fps || 30));
+                    args.push('-c:a', 'aac', '-b:a', '192k', '-ar', '44100');
+                    args.push(path.resolve(ROOT_DIR, renderState.outputFile));
+
+                    console.log(`[LookVideoEditor] FFmpeg 바이너리 직접 실행: ${ffmpegBin}`);
+                    console.log(`[LookVideoEditor] Arguments count: ${args.length}`);
+
+                    child = spawn(ffmpegBin, args, {
+                        cwd: ROOT_DIR,
+                        windowsHide: true
+                    });
+                } else {
+                    // 폴백: exec 방식
+                    let actualCmd = command;
+                    if (actualCmd.startsWith('ffmpeg ')) {
+                        actualCmd = `"${ffmpegBin}" ` + actualCmd.substring(7);
+                    }
+                    child = exec(actualCmd, {
+                        cwd: ROOT_DIR,
+                        windowsHide: true,
+                        maxBuffer: 1024 * 1024 * 50
+                    });
+                }
+
+                currentFfmpegProcess = child;
+
+                let lastStderr = '';
+
+                child.stderr.on('data', (chunk) => {
+                    const str = chunk.toString('utf8');
+                    lastStderr += str;
+                    if (lastStderr.length > 5000) lastStderr = lastStderr.slice(-5000);
+
+                    // FFmpeg 진행 정보 파싱 (예: frame=  120 fps= 60 q=20.0 size=    1024kB time=00:00:04.00 bitrate=2097.2kbits/s speed=2.1x)
+                    const timeMatch = str.match(/time=(\d{2}:\d{2}:\d{2}\.\d{2})/);
+                    const fpsMatch = str.match(/fps=\s*([\d\.]+)/);
+                    const speedMatch = str.match(/speed=\s*([\d\.]+x)/);
+
+                    if (timeMatch) {
+                        renderState.currentTime = timeMatch[1];
+                        const currentSec = parseTimeToSeconds(timeMatch[1]);
+                        if (renderState.totalDuration > 0) {
+                            renderState.progress = Math.min(99.5, parseFloat(((currentSec / renderState.totalDuration) * 100).toFixed(1)));
+                        }
+                    }
+                    if (fpsMatch) renderState.fps = fpsMatch[1];
+                    if (speedMatch) renderState.speed = speedMatch[1];
+                });
+
+                child.on('close', (code) => {
+                    currentFfmpegProcess = null;
+                    try {
+                        if (fs.existsSync(tempFilterPath)) fs.unlinkSync(tempFilterPath);
+                    } catch (e) {}
+
+                    if (renderState.status === 'cancelled') {
+                        console.log('[LookVideoEditor] 렌더링이 사용자에 의해 취소되었습니다.');
+                        return;
+                    }
+
+                    if (code === 0) {
+                        renderState.isRendering = false;
+                        renderState.progress = 100;
+                        renderState.status = 'completed';
+                        renderState.elapsedTime = formatElapsed(Date.now() - renderState.startTime);
+                        console.log(`[LookVideoEditor] 렌더링 성공 완료! (${renderState.elapsedTime})`);
+                    } else {
+                        renderState.isRendering = false;
+                        renderState.status = 'error';
+                        renderState.error = `FFmpeg 종료 코드 ${code}\n${lastStderr.slice(-800)}`;
+                        console.error(`[LookVideoEditor] 렌더링 실패: 코드 ${code}`);
+                    }
+                });
+
+                child.on('error', (err) => {
+                    currentFfmpegProcess = null;
+                    try {
+                        if (fs.existsSync(tempBatPath)) fs.unlinkSync(tempBatPath);
+                    } catch (e) {}
+                    renderState.isRendering = false;
+                    renderState.status = 'error';
+                    renderState.error = err.message;
+                    console.error('[LookVideoEditor] FFmpeg 프로세스 에러:', err);
+                });
+
+                res.writeHead(200, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ status: 'started', outputFile: renderState.outputFile }));
+
+            } catch (err) {
+                res.writeHead(500, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ error: err.message }));
+            }
+        });
+        return;
+    }
+
+    // 4. 렌더링 취소
+    if (pathname === '/api/render/cancel' && req.method === 'POST') {
+        if (currentFfmpegProcess) {
+            renderState.status = 'cancelled';
+            renderState.isRendering = false;
+            try {
+                // Windows 프로세스 트리 강제 종료
+                exec(`taskkill /pid ${currentFfmpegProcess.pid} /T /F`, () => {});
+            } catch (e) {
+                currentFfmpegProcess.kill('SIGKILL');
+            }
+            currentFfmpegProcess = null;
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ status: 'cancelled' }));
+        } else {
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ status: 'no_active_render' }));
+        }
+        return;
+    }
+
+    // 5. 저장 폴더 열기 (Windows Explorer)
+    if (pathname === '/api/open-output' && req.method === 'POST') {
+        let body = '';
+        req.on('data', chunk => { body += chunk; });
+        req.on('end', () => {
+            let targetFile = renderState.outputFile;
+            try {
+                if (body) {
+                    const parsed = JSON.parse(body);
+                    if (parsed.outputFile) targetFile = parsed.outputFile;
+                }
+            } catch (e) {}
+
+            const outputDir = path.resolve(ROOT_DIR, 'output');
+            
+            // 최신 파일 탐색 폴백
+            if ((!targetFile || !fs.existsSync(path.resolve(ROOT_DIR, targetFile))) && fs.existsSync(outputDir)) {
+                const files = fs.readdirSync(outputDir)
+                    .filter(f => f.endsWith('.mp4') || f.endsWith('.webm'))
+                    .map(f => ({ name: f, time: fs.statSync(path.join(outputDir, f)).mtime.getTime() }))
+                    .sort((a, b) => b.time - a.time);
+                if (files.length > 0) targetFile = path.join('output', files[0].name);
+            }
+
+            const fullPath = targetFile ? path.resolve(ROOT_DIR, targetFile) : outputDir;
+            console.log(`[LookVideoEditor] 저장 폴더 열기 요청: ${fullPath}`);
+
+            if (fs.existsSync(fullPath) && fs.statSync(fullPath).isFile()) {
+                spawn('cmd.exe', ['/c', 'start', 'explorer.exe', `/select,"${fullPath}"`], { detached: true, stdio: 'ignore' }).unref();
+            } else {
+                spawn('cmd.exe', ['/c', 'start', 'explorer.exe', outputDir], { detached: true, stdio: 'ignore' }).unref();
+            }
+
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ status: 'opened', path: outputDir }));
+        });
+        return;
+    }
+
+    // 6. 결과 영상 파일 직접 재생 열기
+    if (pathname === '/api/open-file' && req.method === 'POST') {
+        let body = '';
+        req.on('data', chunk => { body += chunk; });
+        req.on('end', () => {
+            let targetFile = renderState.outputFile;
+            try {
+                if (body) {
+                    const parsed = JSON.parse(body);
+                    if (parsed.outputFile) targetFile = parsed.outputFile;
+                }
+            } catch (e) {}
+
+            const outputDir = path.resolve(ROOT_DIR, 'output');
+            
+            // 최신 파일 탐색 폴백
+            if ((!targetFile || !fs.existsSync(path.resolve(ROOT_DIR, targetFile))) && fs.existsSync(outputDir)) {
+                const files = fs.readdirSync(outputDir)
+                    .filter(f => f.endsWith('.mp4') || f.endsWith('.webm'))
+                    .map(f => ({ name: f, time: fs.statSync(path.join(outputDir, f)).mtime.getTime() }))
+                    .sort((a, b) => b.time - a.time);
+                if (files.length > 0) targetFile = path.join('output', files[0].name);
+            }
+
+            const fullPath = targetFile ? path.resolve(ROOT_DIR, targetFile) : null;
+            console.log(`[LookVideoEditor] 결과 영상 재생 요청: ${fullPath}`);
+
+            if (fullPath && fs.existsSync(fullPath)) {
+                // Windows 기본 미디어 플레이어로 포그라운드 실행
+                spawn('cmd.exe', ['/c', 'start', '""', fullPath], { detached: true, stdio: 'ignore' }).unref();
+                res.writeHead(200, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ status: 'opened', file: fullPath }));
+            } else {
+                res.writeHead(404, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ error: '파일을 찾을 수 없습니다.' }));
+            }
+        });
+        return;
+    }
+
+    // 7. 릴스 목록 조회 (vTonSales 릴스 저장 폴더 스캔)
+    if (pathname === '/api/reels/list' && req.method === 'GET') {
+        const reels = [];
+        const seen = new Set();
+
+        const addReel = (filePath, product, origin) => {
+            const key = filePath.toLowerCase();
+            if (seen.has(key)) return;
+            seen.add(key);
+            const name = path.basename(filePath);
+            const stat = fs.statSync(filePath);
+            const base = name.slice(0, name.lastIndexOf('.'));
+            const posterPath = path.join(path.dirname(filePath), `${base}_thumb.jpg`);
+            const poster = fs.existsSync(posterPath) ? posterPath : null;
+            reels.push({
+                name,
+                source: filePath,
+                product,
+                origin,
+                url: `/api/reels-file?path=${encodeURIComponent(filePath)}`,
+                poster: poster ? `/api/reels-file?path=${encodeURIComponent(poster)}` : null,
+                size: stat.size,
+                mtime: stat.mtime.getTime()
+            });
+        };
+
+        try {
+            // 1) samples/{상품}/reels + samples/{상품}/lookbook_reels
+            const samplesDir = path.join(PROJECT_ROOT, 'samples');
+            if (fs.existsSync(samplesDir)) {
+                for (const productDir of fs.readdirSync(samplesDir)) {
+                    const productPath = path.join(samplesDir, productDir);
+                    if (!fs.statSync(productPath).isDirectory()) continue;
+                    for (const sub of ['reels', 'lookbook_reels']) {
+                        const subPath = path.join(productPath, sub);
+                        if (!fs.existsSync(subPath)) continue;
+                        for (const f of fs.readdirSync(subPath)) {
+                            if (!VIDEO_EXTS.has(path.extname(f).toLowerCase())) continue;
+                            const filePath = path.join(subPath, f);
+                            if (fs.statSync(filePath).isFile()) addReel(filePath, productDir, 'samples');
+                        }
+                    }
+                }
+            }
+            // 2) 생성기 outputs/reels 2곳
+            for (const outDir of [
+                path.join(PROJECT_ROOT, 'lookbook_video_generator', 'outputs', 'reels'),
+                path.join(PROJECT_ROOT, 'lookbook_video_api_generator', 'outputs', 'reels')
+            ]) {
+                if (!fs.existsSync(outDir)) continue;
+                for (const f of fs.readdirSync(outDir)) {
+                    if (!VIDEO_EXTS.has(path.extname(f).toLowerCase())) continue;
+                    const filePath = path.join(outDir, f);
+                    if (fs.statSync(filePath).isFile()) {
+                        addReel(filePath, '', outDir.includes('api') ? 'lookbook_api_generator' : 'lookbook_generator');
+                    }
+                }
+            }
+        } catch (e) {
+            console.error('[LookVideoEditor] 릴스 스캔 실패:', e.message);
+        }
+
+        reels.sort((a, b) => b.mtime - a.mtime);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: true, reels }));
+        return;
+    }
+
+    // 8. 릴스/외부 파일 서빙 (프로젝트 루트 내 경로만 허용, HTTP 206 Range 지원)
+    if (pathname === '/api/reels-file' && req.method === 'GET') {
+        const rawPath = parsedUrl.searchParams.get('path');
+        if (!rawPath) {
+            res.writeHead(400, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'path required' }));
+            return;
+        }
+        let targetPath;
+        try {
+            targetPath = path.resolve(decodeURIComponent(rawPath));
+        } catch (e) {
+            res.writeHead(400, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'invalid path' }));
+            return;
+        }
+        const allowed = [PROJECT_ROOT, ROOT_DIR].some(root =>
+            targetPath === root || targetPath.startsWith(root + path.sep)
+        );
+        if (!allowed) {
+            res.writeHead(403, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'Access denied' }));
+            return;
+        }
+        fs.stat(targetPath, (err, stats) => {
+            if (err || !stats.isFile()) {
+                res.writeHead(404, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ error: 'File not found' }));
+                return;
+            }
+            const ext = path.extname(targetPath).toLowerCase();
+            const contentType = MIME_TYPES[ext] || 'application/octet-stream';
+            const range = req.headers.range;
+            if (range && (ext === '.mp4' || ext === '.webm' || ext === '.mp3' || ext === '.mov' || ext === '.avi' || ext === '.m4v')) {
+                const parts = range.replace(/bytes=/, "").split("-");
+                const start = parseInt(parts[0], 10);
+                const end = parts[1] ? parseInt(parts[1], 10) : stats.size - 1;
+                const chunksize = (end - start) + 1;
+                const file = fs.createReadStream(targetPath, { start, end });
+                res.writeHead(206, {
+                    'Content-Range': `bytes ${start}-${end}/${stats.size}`,
+                    'Accept-Ranges': 'bytes',
+                    'Content-Length': chunksize,
+                    'Content-Type': contentType,
+                });
+                file.pipe(res);
+            } else {
+                res.writeHead(200, {
+                    'Content-Length': stats.size,
+                    'Content-Type': contentType,
+                    'Accept-Ranges': 'bytes'
+                });
+                fs.createReadStream(targetPath).pipe(res);
+            }
+        });
+        return;
+    }
+
+    // --- 정적 파일 서빙 (HTTP 206 Partial Content 비디오 스트리밍 지원) ---
+    let safePath = path.normalize(pathname).replace(/^(\.\.[\/\\])+/, '');
+    if (safePath === '/' || safePath === '\\') {
+        safePath = 'index.html';
+    }
+
+    const filePath = path.join(ROOT_DIR, safePath);
+
+    fs.stat(filePath, (err, stats) => {
+        if (err || !stats.isFile()) {
+            res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
+            res.end('404 Not Found');
+            return;
+        }
+
+        const ext = path.extname(filePath).toLowerCase();
+        const contentType = MIME_TYPES[ext] || 'application/octet-stream';
+        const range = req.headers.range;
+
+        if (range && (ext === '.mp4' || ext === '.webm' || ext === '.mp3')) {
+            const parts = range.replace(/bytes=/, "").split("-");
+            const start = parseInt(parts[0], 10);
+            const end = parts[1] ? parseInt(parts[1], 10) : stats.size - 1;
+            const chunksize = (end - start) + 1;
+            const file = fs.createReadStream(filePath, { start, end });
+            res.writeHead(206, {
+                'Content-Range': `bytes ${start}-${end}/${stats.size}`,
+                'Accept-Ranges': 'bytes',
+                'Content-Length': chunksize,
+                'Content-Type': contentType,
+            });
+            file.pipe(res);
+        } else {
+            res.writeHead(200, {
+                'Content-Length': stats.size,
+                'Content-Type': contentType,
+                'Accept-Ranges': 'bytes'
+            });
+            const stream = fs.createReadStream(filePath);
+            stream.pipe(res);
+        }
+    });
+});
+
+server.listen(PORT, () => {
+    console.log('=====================================================');
+    console.log(` 🎬 LookVideoEditor Local Server Started!`);
+    console.log(` 🔗 URL: http://localhost:${PORT}`);
+    console.log(` ⚙️  FFmpeg: ${getFFmpegBinary()}`);
+    console.log('=====================================================');
+});

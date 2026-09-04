@@ -1,0 +1,7 @@
+{
+  "name": "look-video-editor",
+  "version": "2.0.0",
+  "private": true,
+  "type": "commonjs",
+  "description": "LookVideoEditor — 로컬 FFmpeg 기반 릴스 영상 편집기 (vTonSales 허브 통합용, npm 의존성 없음)"
+}
