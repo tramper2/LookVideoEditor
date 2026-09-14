@@ -393,6 +393,21 @@ function setupEventListeners() {
             }
             updateSelectedClipFromInputs();
         });
+
+        // 마지막 사용한 폰트 복원하여 기본 셀렉트에 반영
+        try {
+            const savedFont = localStorage.getItem('look_last_text_font');
+            if (savedFont) {
+                DOM.propTextFont.value = savedFont;
+                if (savedFont === 'custom' && DOM.propTextFontCustomGroup) {
+                    DOM.propTextFontCustomGroup.classList.remove('hide');
+                    const savedCustom = localStorage.getItem('look_last_text_font_custom');
+                    if (savedCustom && DOM.propTextFontCustom) {
+                        DOM.propTextFontCustom.value = savedCustom;
+                    }
+                }
+            }
+        } catch (e) {}
     }
 
     DOM.btnDeleteClip.addEventListener('click', () => {
@@ -906,6 +921,15 @@ function addTextOverlayClip() {
     const timelineStart = STATE.playheadTime;
     const duration = 4.0;
 
+    let defaultFont = 'malgun';
+    let defaultFontCustom = '';
+    try {
+        const savedFont = localStorage.getItem('look_last_text_font');
+        if (savedFont) defaultFont = savedFont;
+        const savedCustom = localStorage.getItem('look_last_text_font_custom');
+        if (savedCustom) defaultFontCustom = savedCustom;
+    } catch (e) {}
+
     const newClip = {
         id: clipId,
         name: '자막 텍스트',
@@ -921,10 +945,10 @@ function addTextOverlayClip() {
         textColor: '#ffffff',
         textOpacity: 100,
         textEffect: 'none',
-        textBgbox: 'on',
+        textBgbox: 'off',
         textWeight: 'normal',
-        textFont: 'malgun',
-        textFontCustom: '',
+        textFont: defaultFont,
+        textFontCustom: defaultFontCustom,
         x: 640, // 가로 중앙 (1280x720 기준)
         y: 600  // 하단
     };
@@ -1148,7 +1172,7 @@ function selectClip(clipId) {
             DOM.propTextOpacity.value = clip.textOpacity !== undefined ? clip.textOpacity : 100;
             if (DOM.propTextOpacityLabel) DOM.propTextOpacityLabel.textContent = `${DOM.propTextOpacity.value}%`;
             DOM.propTextEffect.value = clip.textEffect || 'none';
-            DOM.propTextBgbox.value = clip.textBgbox || 'on';
+            DOM.propTextBgbox.value = clip.textBgbox || 'off';
             DOM.propTextWeight.value = clip.textWeight || 'normal';
             DOM.propTextFont.value = clip.textFont || 'malgun';
             DOM.propTextFontCustom.value = clip.textFontCustom || '';
@@ -1264,6 +1288,12 @@ function updateSelectedClipFromInputs(e) {
             clip.textWeight = DOM.propTextWeight.value;
             clip.textFont = DOM.propTextFont.value;
             clip.textFontCustom = DOM.propTextFontCustom.value;
+            try {
+                localStorage.setItem('look_last_text_font', clip.textFont);
+                if (clip.textFontCustom) {
+                    localStorage.setItem('look_last_text_font_custom', clip.textFontCustom);
+                }
+            } catch (e) {}
             if (DOM.propTextOpacityLabel) DOM.propTextOpacityLabel.textContent = `${clip.textOpacity}%`;
         } else if (clip.overlayType === 'image') {
             clip.width = parseInt(DOM.propImgWidth.value) || 150;
@@ -1795,6 +1825,24 @@ function renderPreview() {
 
             let textX = clip.x === 640 ? canvasW / 2 : (clip.x * (canvasW / 1280));
             let textY = clip.y * (canvasH / 720);
+
+            // 배경 상자 (textBgbox === 'on'일 때 프리뷰 캔버스에도 동일하게 렌더링)
+            if (clip.textBgbox === 'on') {
+                const textStr = clip.text || '';
+                const metrics = ctx.measureText(textStr);
+                const textW = metrics.width;
+                const padX = 10 * scale;
+                const padY = 6 * scale;
+                const bgW = textW + padX * 2;
+                const bgH = fontSize + padY * 2;
+                const bgX = (clip.x === 640) ? (textX - textW / 2 - padX) : (textX - padX);
+                const bgY = textY - (bgH / 2);
+
+                ctx.save();
+                ctx.fillStyle = 'rgba(0, 0, 0, 0.4)';
+                ctx.fillRect(bgX, bgY, bgW, bgH);
+                ctx.restore();
+            }
 
             ctx.textAlign = clip.x === 640 ? 'center' : 'left';
             ctx.textBaseline = 'middle';

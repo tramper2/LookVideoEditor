@@ -321,8 +321,8 @@ function generateFFmpegCommand(projectState) {
             textEffectOpts = ':borderw=3:bordercolor=black:shadowx=2:shadowy=2:shadowcolor=black@0.8';
         }
 
-        // 배경 상자 (기존 동작 유지: 사용이 기본)
-        const boxOpts = clip.textBgbox === 'off' ? '' : ':box=1:boxcolor=black@0.4';
+        // 배경 상자: 명시적으로 'on'일 때만 적용 (기본값은 off)
+        const boxOpts = clip.textBgbox === 'on' ? ':box=1:boxcolor=black@0.4' : '';
 
         // 特수문자 escape
         let textEscaped = (clip.text || '')
