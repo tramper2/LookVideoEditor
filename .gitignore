@@ -12,6 +12,12 @@ source/*
 output/*
 !output/.gitkeep
 
+# WebP 내보내기 임시 작업 폴더 (무손실 중간본이 수십 MB)
+temp/
+
+# 검증 하네스가 만드는 산출물 (스크립트 자체는 추적하지 않음)
+_webptest/
+
 # 로컬에서 생성된 프로젝트 파라미터 백업 파일
 LookVideoEditor_project_*.json
 sVidEditor_project_*.json

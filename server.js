@@ -9,6 +9,10 @@ const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const { spawn, exec } = require('child_process');
+const { exportWebp, cleanupAllPending, cleanupOrphanTemps } = require('./webp-exporter');
+
+// WebP 중간본/프로브 임시 폴더 위치
+const WEBP_TEMP_ROOT = path.join(__dirname, 'temp');
 
 // 포트 결정: --port N / --port=N / 위치 인자 / PORT 환경변수 / 기본 3000 (start.bat 독립 실행 호환)
 function resolvePort() {
@@ -60,14 +64,53 @@ let renderState = {
     totalDuration: 0,
     fps: "0",
     speed: "0x",
-    status: "idle", // 'idle' | 'rendering' | 'completed' | 'error' | 'cancelled'
+    // 'idle' | 'rendering' | 'completed' | 'error' | 'cancelled' | 'needs_confirm'
+    status: "idle",
     error: null,
     outputFile: null,
     startTime: 0,
     elapsedTime: "00:00"
 };
 
-let currentFfmpegProcess = null;
+// 진행 중인 FFmpeg 프로세스들. WebP 는 품질 탐색을 병렬 프로브로 돌리므로 여러 개가 동시에 뜬다.
+let activeProcesses = [];
+
+// 해상도 하향 확인을 기다리는 WebP 요청 (사용자가 응답하면 이어서 진행한다)
+let pendingWebp = null;
+
+function registerProcess(child) {
+    activeProcesses.push(child);
+    child.on('close', () => {
+        activeProcesses = activeProcesses.filter((c) => c !== child);
+    });
+    return child;
+}
+
+/**
+ * 임시 폴더 정리를 지연 재시도한다.
+ * Windows 는 막 종료된 ffmpeg 가 파일 핸들을 잠시 붙들고 있어 rmSync 가 EBUSY/EPERM 로
+ * 실패할 수 있다(취소 직후 실제로 폴더가 남았다). 잠금이 풀린 뒤 다시 쓸어낸다.
+ */
+function scheduleTempSweep() {
+    [1500, 4000, 8000].forEach((delay) => {
+        const timer = setTimeout(() => cleanupOrphanTemps(WEBP_TEMP_ROOT), delay);
+        if (timer.unref) timer.unref();
+    });
+}
+
+function killAllProcesses() {
+    const list = activeProcesses.slice();
+    activeProcesses = [];
+    list.forEach((child) => {
+        try {
+            // Windows 프로세스 트리 강제 종료
+            exec(`taskkill /pid ${child.pid} /T /F`, () => {});
+        } catch (e) {
+            try { child.kill('SIGKILL'); } catch (e2) {}
+        }
+    });
+    return list.length;
+}
 
 // 로컬 FFmpeg 바이너리 탐색
 function getFFmpegBinary() {
@@ -92,6 +135,157 @@ function formatElapsed(ms) {
     const m = Math.floor(totalSec / 60);
     const s = totalSec % 60;
     return `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
+}
+
+/* ------------------------------------------------------------------ */
+/* WebP 내보내기 orchestration                                         */
+/* ------------------------------------------------------------------ */
+
+// 단계별 진행률 가중치 (중간본 합성은 짧고, 탐색과 확정 인코딩이 대부분을 차지한다)
+const WEBP_PHASE_WEIGHT = { intermediate: 5, search: 60, final: 35 };
+
+function updateWebpProgress(info) {
+    if (!renderState.webp) renderState.webp = {};
+    const w = renderState.webp;
+    w.phase = info.phase;
+    if (info.quality !== undefined) w.quality = info.quality;
+    if (info.sizeBytes !== undefined) w.sizeBytes = info.sizeBytes;
+    if (info.probes !== undefined) w.probes = info.probes;
+    if (info.width !== undefined) w.width = info.width;
+    if (info.height !== undefined) w.height = info.height;
+    if (info.targetBytes !== undefined) w.targetBytes = info.targetBytes;
+    if (info.attempt !== undefined) w.attempt = info.attempt;
+    if (info.suggestion !== undefined) w.suggestion = info.suggestion;
+    if (info.floorSizeBytes !== undefined) w.floorSizeBytes = info.floorSizeBytes;
+
+    // 대략적인 진행률 (탐색은 프로브 수 기준, 최대 12회 가정)
+    let percent = 0;
+    if (info.phase === 'intermediate') percent = 2;
+    else if (info.phase === 'search') {
+        const done = Math.min(info.probes || 0, 12) / 12;
+        percent = WEBP_PHASE_WEIGHT.intermediate + done * WEBP_PHASE_WEIGHT.search;
+    } else if (info.phase === 'final') percent = 95;
+    else if (info.phase === 'needs_confirm') percent = 100;
+
+    renderState.progress = Math.max(renderState.progress || 0, Math.min(99, percent));
+}
+
+/**
+ * WebP 내보내기를 백그라운드로 시작한다. 결과는 renderState 로 흘려보내고
+ * 클라이언트는 /api/render/progress 를 폴링한다.
+ */
+function startWebpExport(params) {
+    const {
+        rawInputs, filterComplex, mappedVideo, mappedAudio,
+        rangeStart, rangeDuration, fps,
+        targetBytes, outputWidth, outputHeight, outputFile,
+        mode = 'initial', reuseToken = null, forcedWidth = null, forcedHeight = null
+    } = params;
+
+    renderState = {
+        isRendering: true,
+        progress: 0,
+        currentTime: "00:00:00.00",
+        totalDuration: rangeDuration,
+        fps: String(fps),
+        speed: "0x",
+        status: 'rendering',
+        error: null,
+        outputFile,
+        startTime: Date.now(),
+        elapsedTime: "00:00",
+        webp: {
+            phase: 'intermediate',
+            mode,
+            targetBytes,
+            width: forcedWidth || outputWidth,
+            height: forcedHeight || outputHeight
+        }
+    };
+
+    console.log(`[LookVideoEditor] WebP 내보내기 시작 (mode=${mode}, 목표 ${(targetBytes / 1048576).toFixed(1)}MB, ${rangeDuration}초)`);
+
+    exportWebp({
+        ffmpegBin: getFFmpegBinary(),
+        rawInputs,
+        filterComplex,
+        mappedVideo,
+        mappedAudio,
+        rangeStart,
+        rangeDuration,
+        fps,
+        targetBytes,
+        maxWidth: outputWidth,
+        maxHeight: outputHeight,
+        outputPath: path.resolve(ROOT_DIR, outputFile),
+        tempRoot: WEBP_TEMP_ROOT,
+        mode,
+        reuseToken,
+        forcedWidth,
+        forcedHeight
+    }, {
+        registerProcess,
+        onProgress: updateWebpProgress
+    })
+    .then((result) => {
+        renderState.isRendering = false;
+        renderState.elapsedTime = formatElapsed(Date.now() - renderState.startTime);
+
+        if (result.status !== 'needs_confirm') {
+            // 성공 경로에서도 남은 프로브 파일이 있을 수 있어 스윕한다
+            cleanupOrphanTemps(WEBP_TEMP_ROOT);
+        }
+
+        if (result.status === 'needs_confirm') {
+            // 목표를 맞추려면 해상도를 낮춰야 한다 — 사용자 확인 대기
+            renderState.status = 'needs_confirm';
+            renderState.webp = Object.assign(renderState.webp || {}, {
+                phase: 'needs_confirm',
+                token: result.token,
+                floorSizeBytes: result.floorSizeBytes,
+                suggestion: result.suggestion,
+                width: result.searchWidth,
+                height: result.searchHeight
+            });
+            // 사용자가 응답하면 중간본을 재사용해 이어서 진행할 수 있도록 요청을 보관한다.
+            pendingWebp = Object.assign({}, params, {
+                token: result.token,
+                targetBytes,
+                outputWidth,
+                outputHeight,
+                outputFile
+            });
+            console.log(`[LookVideoEditor] 해상도 하향 필요: ${result.searchWidth}x${result.searchHeight} → ` +
+                `${result.suggestion ? `${result.suggestion.width}x${result.suggestion.height}` : '제안 없음'}`);
+            return;
+        }
+
+        renderState.status = 'completed';
+        renderState.progress = 100;
+        renderState.outputFile = result.outputPath;
+        renderState.webp = Object.assign(renderState.webp || {}, {
+            phase: 'completed',
+            width: result.width,
+            height: result.height,
+            quality: result.quality,
+            sizeBytes: result.sizeBytes,
+            targetBytes: result.targetBytes,
+            exceededTarget: result.exceededTarget,
+            probes: result.probes
+        });
+        console.log(`[LookVideoEditor] WebP 완료: ${result.width}x${result.height} q=${result.quality} ` +
+            `${(result.sizeBytes / 1048576).toFixed(2)}MB (${renderState.elapsedTime})`);
+    })
+    .catch((err) => {
+        // 취소·실패로 중단된 작업의 임시 폴더를 정리한다 (무손실 중간본이 수십 MB)
+        cleanupOrphanTemps(WEBP_TEMP_ROOT);
+        scheduleTempSweep();
+        if (renderState.status === 'cancelled') return;
+        renderState.isRendering = false;
+        renderState.status = 'error';
+        renderState.error = err.message;
+        console.error('[LookVideoEditor] WebP 내보내기 실패:', err.message);
+    });
 }
 
 const server = http.createServer((req, res) => {
@@ -281,7 +475,7 @@ const server = http.createServer((req, res) => {
                     });
                 }
 
-                currentFfmpegProcess = child;
+                registerProcess(child);
 
                 let lastStderr = '';
 
@@ -307,7 +501,6 @@ const server = http.createServer((req, res) => {
                 });
 
                 child.on('close', (code) => {
-                    currentFfmpegProcess = null;
                     try {
                         if (fs.existsSync(tempFilterPath)) fs.unlinkSync(tempFilterPath);
                     } catch (e) {}
@@ -332,9 +525,8 @@ const server = http.createServer((req, res) => {
                 });
 
                 child.on('error', (err) => {
-                    currentFfmpegProcess = null;
                     try {
-                        if (fs.existsSync(tempBatPath)) fs.unlinkSync(tempBatPath);
+                        if (fs.existsSync(tempFilterPath)) fs.unlinkSync(tempFilterPath);
                     } catch (e) {}
                     renderState.isRendering = false;
                     renderState.status = 'error';
@@ -353,24 +545,144 @@ const server = http.createServer((req, res) => {
         return;
     }
 
-    // 4. 렌더링 취소
+    // 4. 렌더링 취소 (WebP 병렬 프로브까지 모두 종료)
     if (pathname === '/api/render/cancel' && req.method === 'POST') {
-        if (currentFfmpegProcess) {
+        const killed = killAllProcesses();
+        if (killed > 0 || renderState.isRendering) {
             renderState.status = 'cancelled';
             renderState.isRendering = false;
-            try {
-                // Windows 프로세스 트리 강제 종료
-                exec(`taskkill /pid ${currentFfmpegProcess.pid} /T /F`, () => {});
-            } catch (e) {
-                currentFfmpegProcess.kill('SIGKILL');
-            }
-            currentFfmpegProcess = null;
+            pendingWebp = null;
+            // 확인 대기 중이던 보류본까지 버린다 (사용자가 작업 자체를 중단했으므로)
+            cleanupAllPending();
+            // 죽인 프로세스가 남긴 임시 폴더 정리 (exportWebp 의 catch 도 시도하지만
+            // 프로세스가 죽어 reject 가 늦게 도착할 수 있어 여기서도 처리한다)
+            const swept = cleanupOrphanTemps(WEBP_TEMP_ROOT);
+            scheduleTempSweep();
             res.writeHead(200, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify({ status: 'cancelled' }));
+            res.end(JSON.stringify({ status: 'cancelled', killed, swept }));
         } else {
             res.writeHead(200, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify({ status: 'no_active_render' }));
         }
+        return;
+    }
+
+    // 4-B. 애니메이션 WebP 내보내기 시작 (목표 용량 보장)
+    if (pathname === '/api/render/webp' && req.method === 'POST') {
+        if (renderState.isRendering) {
+            res.writeHead(400, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: '이미 다른 렌더링 작업이 진행 중입니다.' }));
+            return;
+        }
+
+        let body = '';
+        req.on('data', chunk => { body += chunk; });
+        req.on('end', () => {
+            let data;
+            try {
+                data = JSON.parse(body);
+            } catch (err) {
+                res.writeHead(400, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ error: '요청 본문을 해석할 수 없습니다.' }));
+                return;
+            }
+
+            const {
+                rawInputs, filterComplex, mappedVideo, mappedAudio,
+                rangeStart = 0, rangeDuration = 5, fps = 20,
+                targetMB = 3, outputWidth = 1080, outputHeight = 1920,
+                outputFile
+            } = data;
+
+            if (!rawInputs || !filterComplex || !mappedVideo || !outputFile) {
+                res.writeHead(400, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ error: 'WebP 내보내기 파라미터가 부족합니다.' }));
+                return;
+            }
+            if (!(rangeDuration > 0)) {
+                res.writeHead(400, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ error: 'WebP 구간 길이가 올바르지 않습니다.' }));
+                return;
+            }
+
+            // 출력 경로 검증 (프로젝트 루트 밖 경로 차단)
+            const resolvedOutput = path.resolve(ROOT_DIR, outputFile);
+            const outputAllowed = [PROJECT_ROOT, ROOT_DIR].some(root =>
+                resolvedOutput === root || resolvedOutput.startsWith(root + path.sep)
+            );
+            if (!outputAllowed) {
+                res.writeHead(403, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ error: '출력 경로가 허용 범위를 벗어났습니다.' }));
+                return;
+            }
+
+            startWebpExport({
+                rawInputs, filterComplex, mappedVideo, mappedAudio,
+                rangeStart, rangeDuration, fps,
+                targetBytes: Math.round(targetMB * 1024 * 1024),
+                outputWidth, outputHeight, outputFile,
+                mode: 'initial'
+            });
+
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ status: 'started', outputFile }));
+        });
+        return;
+    }
+
+    // 4-C. 해상도 하향 확인 응답 — 보관된 중간본을 재사용해 이어서 진행한다
+    if (pathname === '/api/render/webp/confirm' && req.method === 'POST') {
+        if (renderState.isRendering) {
+            res.writeHead(400, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: '이미 다른 렌더링 작업이 진행 중입니다.' }));
+            return;
+        }
+
+        let body = '';
+        req.on('data', chunk => { body += chunk; });
+        req.on('end', () => {
+            let data;
+            try {
+                data = JSON.parse(body);
+            } catch (err) {
+                res.writeHead(400, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ error: '요청 본문을 해석할 수 없습니다.' }));
+                return;
+            }
+
+            if (!pendingWebp) {
+                res.writeHead(400, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ error: '확인을 기다리는 작업이 없습니다. 처음부터 다시 시도해 주세요.' }));
+                return;
+            }
+
+            const base = pendingWebp;
+            pendingWebp = null;
+
+            const { action, width, height } = data;
+            if (action === 'floor') {
+                // 하향 거부 — 품질 하한으로 확정하고 초과를 감수
+                startWebpExport(Object.assign({}, base, {
+                    mode: 'accept-floor',
+                    reuseToken: base.token
+                }));
+            } else {
+                if (!(width > 0 && height > 0)) {
+                    res.writeHead(400, { 'Content-Type': 'application/json' });
+                    res.end(JSON.stringify({ error: '승인할 해상도가 올바르지 않습니다.' }));
+                    return;
+                }
+                startWebpExport(Object.assign({}, base, {
+                    mode: 'accept-resolution',
+                    reuseToken: base.token,
+                    forcedWidth: parseInt(width, 10),
+                    forcedHeight: parseInt(height, 10)
+                }));
+            }
+
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ status: 'started' }));
+        });
         return;
     }
 
@@ -392,7 +704,7 @@ const server = http.createServer((req, res) => {
             // 최신 파일 탐색 폴백
             if ((!targetFile || !fs.existsSync(path.resolve(ROOT_DIR, targetFile))) && fs.existsSync(outputDir)) {
                 const files = fs.readdirSync(outputDir)
-                    .filter(f => f.endsWith('.mp4') || f.endsWith('.webm'))
+                    .filter(f => f.endsWith('.mp4') || f.endsWith('.webm') || f.endsWith('.webp'))
                     .map(f => ({ name: f, time: fs.statSync(path.join(outputDir, f)).mtime.getTime() }))
                     .sort((a, b) => b.time - a.time);
                 if (files.length > 0) targetFile = path.join('output', files[0].name);
@@ -432,7 +744,7 @@ const server = http.createServer((req, res) => {
             // 최신 파일 탐색 폴백
             if ((!targetFile || !fs.existsSync(path.resolve(ROOT_DIR, targetFile))) && fs.existsSync(outputDir)) {
                 const files = fs.readdirSync(outputDir)
-                    .filter(f => f.endsWith('.mp4') || f.endsWith('.webm'))
+                    .filter(f => f.endsWith('.mp4') || f.endsWith('.webm') || f.endsWith('.webp'))
                     .map(f => ({ name: f, time: fs.statSync(path.join(outputDir, f)).mtime.getTime() }))
                     .sort((a, b) => b.time - a.time);
                 if (files.length > 0) targetFile = path.join('output', files[0].name);
@@ -442,10 +754,19 @@ const server = http.createServer((req, res) => {
             console.log(`[LookVideoEditor] 결과 영상 재생 요청: ${fullPath}`);
 
             if (fullPath && fs.existsSync(fullPath)) {
-                // Windows 기본 미디어 플레이어로 포그라운드 실행 (경로 따옴표 처리로 공백 안전)
-                spawn('cmd.exe', ['/c', 'start', '""', `"${fullPath}"`], { detached: true, stdio: 'ignore' }).unref();
-                res.writeHead(200, { 'Content-Type': 'application/json' });
-                res.end(JSON.stringify({ status: 'opened', file: fullPath }));
+                if (path.extname(fullPath).toLowerCase() === '.webp') {
+                    // 애니메이션 WebP 는 Windows 사진 앱이 첫 프레임만 보여줄 수 있으므로
+                    // 기본 브라우저로 우리 서버 URL 을 연다 (애니메이션 재생 보장).
+                    const url = `http://localhost:${PORT}/api/reels-file?path=${encodeURIComponent(fullPath)}`;
+                    spawn('cmd.exe', ['/c', 'start', '""', `"${url}"`], { detached: true, stdio: 'ignore' }).unref();
+                    res.writeHead(200, { 'Content-Type': 'application/json' });
+                    res.end(JSON.stringify({ status: 'opened', file: fullPath, url }));
+                } else {
+                    // Windows 기본 미디어 플레이어로 포그라운드 실행 (경로 따옴표 처리로 공백 안전)
+                    spawn('cmd.exe', ['/c', 'start', '""', `"${fullPath}"`], { detached: true, stdio: 'ignore' }).unref();
+                    res.writeHead(200, { 'Content-Type': 'application/json' });
+                    res.end(JSON.stringify({ status: 'opened', file: fullPath }));
+                }
             } else {
                 res.writeHead(404, { 'Content-Type': 'application/json' });
                 res.end(JSON.stringify({ error: '파일을 찾을 수 없습니다.' }));
@@ -647,9 +968,24 @@ const server = http.createServer((req, res) => {
 });
 
 server.listen(PORT, () => {
+    // 이전 실행이 비정상 종료되며 남긴 WebP 임시 폴더 정리
+    const swept = cleanupOrphanTemps(WEBP_TEMP_ROOT);
+    if (swept > 0) {
+        console.log(` 🧹 이전 작업의 WebP 임시 폴더 ${swept}개를 정리했습니다.`);
+    }
+
     console.log('=====================================================');
     console.log(` 🎬 LookVideoEditor Local Server Started!`);
     console.log(` 🔗 URL: http://localhost:${PORT}`);
     console.log(` ⚙️  FFmpeg: ${getFFmpegBinary()}`);
     console.log('=====================================================');
 });
+
+// 종료 시 진행 중인 FFmpeg 와 보류 중인 WebP 임시 파일 정리
+function shutdown() {
+    killAllProcesses();
+    cleanupAllPending();
+    process.exit(0);
+}
+process.on('SIGINT', shutdown);
+process.on('SIGTERM', shutdown);

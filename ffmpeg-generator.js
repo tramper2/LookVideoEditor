@@ -522,3 +522,13 @@ function getFFmpegFontPath(textFont, textFontCustom, isBold) {
             return 'C\\:/Windows/Fonts/malgun.ttf';
     }
 }
+
+// 브라우저에서는 전역 함수로, Node(검증 하네스 등)에서는 모듈로 쓸 수 있게 한다.
+if (typeof module !== 'undefined' && module.exports) {
+    module.exports = {
+        generateFFmpegCommand,
+        getAudioTempoFilter,
+        getFFmpegFontPath,
+        formatTime
+    };
+}

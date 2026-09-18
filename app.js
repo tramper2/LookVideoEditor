@@ -23,13 +23,23 @@ const STATE = {
     outputHeight: 1080,      // 최종 비디오 출력 세로 크기
     outputFps: 30,           // 최종 비디오 출력 프레임 레이트
     encoder: 'h264_nvenc',   // 렌더링 인코더 (h264_nvenc: GPU, libx264: CPU)
+
+    // 애니메이션 WebP 내보내기 설정
+    webpRange: { start: 0, duration: 5 },  // 내보낼 타임라인 구간 (초). 최대 WEBP_MAX_DURATION
+    webpTargetMB: 3,                       // 결과물이 넘지 않아야 할 최대 용량 (MB)
+    webpFps: 20,                           // WebP 프레임 레이트
+
     playerLastSeekTimes: {}, // 플레이어별 마지막 Seek 타임스탬프 (ms, 싱크 지터 방지)
-    
+
     // 렌더링 상태
     isRendering: false,
     renderPollingTimer: null,
     activeRenderOutput: null
 };
+
+// WebP 구간 최대 길이(초). 애니메이션 WebP 용량을 감당할 수 있는 상한이다.
+const WEBP_MAX_DURATION = 5;
+const WEBP_MIN_DURATION = 0.5;
 
 // 비디오 효과 렌더링용 임시 버퍼 캔버스
 const filterBufferCanvas = document.createElement('canvas');
@@ -152,7 +162,32 @@ const DOM = {
     btnOpenRenderedFile: document.getElementById('btn-open-rendered-file'),
     btnOpenOutputFolder: document.getElementById('btn-open-output-folder'),
     btnDownloadRenderedVideo: document.getElementById('btn-download-rendered-video'),
-    btnRenderDone: document.getElementById('btn-render-done')
+    btnRenderDone: document.getElementById('btn-render-done'),
+
+    // 렌더 모달 - WebP 전용 요소
+    renderedResultImage: document.getElementById('rendered-result-image'),
+    webpResultSummary: document.getElementById('webp-result-summary'),
+    webpConfirmBox: document.getElementById('webp-confirm-box'),
+    webpConfirmDesc: document.getElementById('webp-confirm-desc'),
+    webpConfirmDownscale: document.getElementById('webp-confirm-downscale'),
+    webpConfirmFloor: document.getElementById('webp-confirm-floor'),
+    webpConfirmCancel: document.getElementById('webp-confirm-cancel'),
+
+    // WebP 내보내기 설정 모달
+    btnExportWebp: document.getElementById('btn-export-webp'),
+    webpModal: document.getElementById('webp-modal'),
+    webpModalCloseBtn: document.getElementById('webp-modal-close-btn'),
+    webpModalCancel: document.getElementById('webp-modal-cancel'),
+    btnStartWebp: document.getElementById('btn-start-webp'),
+    webpRangeReadout: document.getElementById('webp-range-readout'),
+    webpRangeDuration: document.getElementById('webp-range-duration'),
+    webpTargetSize: document.getElementById('webp-target-size'),
+    webpTargetValue: document.getElementById('webp-target-value'),
+    webpFps: document.getElementById('webp-fps'),
+
+    // 타임라인 WebP 구간 밴드
+    webpRangeBand: document.getElementById('webp-range-band'),
+    webpRangeLabel: document.getElementById('webp-range-label')
 };
 
 // Canvas 컨텍스트 및 오버레이 버퍼 캐시
@@ -249,6 +284,42 @@ function setupEventListeners() {
     if (DOM.btnOpenRenderedFile) DOM.btnOpenRenderedFile.addEventListener('click', openRenderedVideoFile);
     if (DOM.btnOpenOutputFolder) DOM.btnOpenOutputFolder.addEventListener('click', openOutputFolder);
     if (DOM.btnRenderDone) DOM.btnRenderDone.addEventListener('click', closeRenderModal);
+
+    // WebP 내보내기 설정 모달
+    if (DOM.btnExportWebp) DOM.btnExportWebp.addEventListener('click', openWebpModal);
+    if (DOM.webpModalCloseBtn) DOM.webpModalCloseBtn.addEventListener('click', closeWebpModal);
+    if (DOM.webpModalCancel) DOM.webpModalCancel.addEventListener('click', closeWebpModal);
+    if (DOM.btnStartWebp) DOM.btnStartWebp.addEventListener('click', startWebpExportFromModal);
+    if (DOM.webpTargetSize) {
+        DOM.webpTargetSize.addEventListener('input', (e) => {
+            STATE.webpTargetMB = parseFloat(e.target.value);
+            DOM.webpTargetValue.textContent = `${STATE.webpTargetMB.toFixed(1)} MB`;
+        });
+    }
+    if (DOM.webpFps) {
+        DOM.webpFps.addEventListener('change', (e) => {
+            STATE.webpFps = parseInt(e.target.value, 10) || 20;
+            updateWebpModalReadout();
+        });
+    }
+
+    // 해상도 하향 확인 다이얼로그
+    if (DOM.webpConfirmDownscale) DOM.webpConfirmDownscale.addEventListener('click', () => confirmWebpDownscale(true));
+    if (DOM.webpConfirmFloor) DOM.webpConfirmFloor.addEventListener('click', () => confirmWebpDownscale(false));
+    if (DOM.webpConfirmCancel) DOM.webpConfirmCancel.addEventListener('click', cancelRendering);
+
+    // 타임라인 WebP 구간 밴드 드래그
+    if (DOM.webpRangeBand) {
+        DOM.webpRangeBand.querySelector('.webp-range-handle-left')
+            ?.addEventListener('mousedown', (e) => initWebpBandDrag(e, 'left'));
+        DOM.webpRangeBand.querySelector('.webp-range-handle-right')
+            ?.addEventListener('mousedown', (e) => initWebpBandDrag(e, 'right'));
+        DOM.webpRangeBand.addEventListener('mousedown', (e) => {
+            // 핸들이 아닌 몸통을 잡으면 구간 전체 이동
+            if (e.target.classList.contains('webp-range-handle')) return;
+            initWebpBandDrag(e, 'move');
+        });
+    }
 
     // 플레이어 제어 이벤트
     DOM.btnPlay.addEventListener('click', togglePlayback);
@@ -1054,6 +1125,8 @@ function updateTimelineClipsUI() {
 
         lane.appendChild(clipEl);
     });
+
+    updateWebpBand();
 }
 
 // 클립 선택
@@ -1319,6 +1392,7 @@ function updateTimelineClipsUIOnlyPosition() {
             }
         }
     });
+    updateWebpBand();
 }
 
 // 클립 삭제
@@ -1400,6 +1474,7 @@ function recalculateTotalDuration() {
     STATE.totalDuration = contentDur > 0 ? contentDur : 10.0;
     drawRuler();
     updateTimeDisplay();
+    updateWebpBand();   // 타임라인 길이가 바뀌면 구간도 유효 범위로 다시 맞춘다
 }
 
 // 타임라인 줌 변경
@@ -1415,7 +1490,131 @@ function updateTimelineZoom() {
     
     updateTimelineClipsUI();
     updatePlayheadPosition();
+    updateWebpBand();
     drawRuler();
+}
+
+/* ========================================================================
+   WebP 내보내기 구간 밴드 (최대 5초)
+   ======================================================================== */
+
+// 구간 값을 유효 범위(0 이상, 0.5~5초, 타임라인 길이 이내)로 정규화한다.
+function clampWebpRange() {
+    const range = STATE.webpRange;
+    const total = getProjectContentDuration() || STATE.totalDuration || 0;
+
+    range.duration = Math.min(Math.max(WEBP_MIN_DURATION, range.duration), WEBP_MAX_DURATION);
+    if (total > 0) {
+        range.duration = Math.min(range.duration, total);
+        range.start = Math.max(0, Math.min(range.start, total - range.duration));
+    } else {
+        range.start = 0;
+    }
+    range.start = Math.max(0, parseFloat(range.start.toFixed(3)));
+    range.duration = parseFloat(range.duration.toFixed(3));
+    return range;
+}
+
+// 구간을 설정하고 밴드를 다시 그린다.
+function setWebpRange(start, duration) {
+    STATE.webpRange.start = start;
+    STATE.webpRange.duration = duration;
+    clampWebpRange();
+    updateWebpBand();
+}
+
+// 밴드 위치/폭/라벨을 현재 구간에 맞춰 갱신한다.
+function updateWebpBand() {
+    const band = DOM.webpRangeBand;
+    if (!band) return;
+
+    // 클립이 없으면 내보낼 구간 자체가 없다
+    if (STATE.clips.length === 0) {
+        band.classList.add('hide');
+        return;
+    }
+    band.classList.remove('hide');
+
+    const range = clampWebpRange();
+    const zoom = STATE.timelineZoom;
+    const widthPx = range.duration * zoom;
+
+    band.style.transform = `translateX(${range.start * zoom}px)`;
+    band.style.width = `${widthPx}px`;
+    band.classList.toggle('too-narrow', widthPx < 76);
+
+    if (DOM.webpRangeLabel) {
+        DOM.webpRangeLabel.textContent = `WebP ${range.duration.toFixed(1)}초`;
+    }
+
+    if (DOM.webpModal && DOM.webpModal.classList.contains('show')) {
+        updateWebpModalReadout();
+    }
+}
+
+// 밴드 드래그: 왼쪽/오른쪽 핸들로 양 끝 조정, 몸통으로 구간 전체 이동.
+// 최대 5초를 넘기려 하면 반대쪽 끝이 밀려나 창이 미끄러진다(멈칫하지 않게).
+function initWebpBandDrag(e, mode) {
+    e.preventDefault();
+    e.stopPropagation();
+
+    const range = clampWebpRange();
+    const startX = e.clientX;
+    const origStart = range.start;
+    const origDuration = range.duration;
+
+    function onMouseMove(moveE) {
+        const deltaSec = (moveE.clientX - startX) / STATE.timelineZoom;
+        const total = getProjectContentDuration() || STATE.totalDuration || 0;
+        const maxStart = Math.max(0, total - WEBP_MIN_DURATION);
+
+        let newStart = origStart;
+        let newEnd = origStart + origDuration;
+
+        if (mode === 'move') {
+            newStart = Math.max(0, Math.min(origStart + deltaSec, Math.max(0, total - origDuration)));
+            newEnd = newStart + origDuration;
+        } else if (mode === 'left') {
+            newStart = Math.max(0, origStart + deltaSec);
+            newEnd = origStart + origDuration;
+            if (newEnd - newStart > WEBP_MAX_DURATION) {
+                newEnd = newStart + WEBP_MAX_DURATION;   // 5초 상한 → 오른쪽이 밀려남
+            }
+            if (total > 0 && newEnd > total) {
+                newEnd = total;
+                newStart = Math.max(0, newEnd - WEBP_MAX_DURATION);
+            }
+        } else {  // 'right'
+            newEnd = Math.max(0, origStart + origDuration + deltaSec);
+            newStart = origStart;
+            if (newEnd - newStart > WEBP_MAX_DURATION) {
+                newStart = newEnd - WEBP_MAX_DURATION;   // 5초 상한 → 왼쪽이 밀려남
+            }
+            if (newStart < 0) {
+                newStart = 0;
+                newEnd = Math.min(total || WEBP_MAX_DURATION, WEBP_MAX_DURATION);
+            }
+            if (total > 0 && newEnd > total) {
+                newEnd = total;
+                newStart = Math.max(0, Math.min(newStart, newEnd - WEBP_MIN_DURATION));
+            }
+        }
+
+        newStart = Math.max(0, Math.min(newStart, maxStart));
+        STATE.webpRange.start = newStart;
+        STATE.webpRange.duration = Math.max(WEBP_MIN_DURATION, newEnd - newStart);
+        updateWebpBand();
+    }
+
+    function onMouseUp() {
+        window.removeEventListener('mousemove', onMouseMove);
+        window.removeEventListener('mouseup', onMouseUp);
+        clampWebpRange();
+        updateWebpBand();
+    }
+
+    window.addEventListener('mousemove', onMouseMove);
+    window.addEventListener('mouseup', onMouseUp);
 }
 
 // 눈금자 그리기
@@ -2246,7 +2445,37 @@ async function pollRenderProgress() {
         if (!res.ok) return;
 
         const data = await res.json();
-        
+
+        // WebP 내보내기 진행 중이면 단계별 문구와 실시간 용량을 보여준다
+        if (data.status === 'rendering' && data.webp) {
+            const w = data.webp;
+            const mb = (n) => (n / 1048576).toFixed(2);
+
+            let desc = "애니메이션 WebP를 생성하고 있습니다.";
+            if (w.phase === 'intermediate') desc = "합성 결과를 준비하고 있습니다 (중간본 생성).";
+            else if (w.phase === 'search') {
+                desc = `목표 용량에 맞는 품질을 탐색하고 있습니다 (${w.probes || 0}회 시험 인코딩).`;
+            } else if (w.phase === 'final') {
+                desc = `확정 인코딩 중입니다${w.attempt > 1 ? ` (재시도 ${w.attempt - 1})` : ''}.`;
+            }
+
+            const infoParts = [];
+            if (w.width && w.height) infoParts.push(`${w.width}x${w.height}`);
+            if (w.quality !== undefined) infoParts.push(`q=${w.quality}`);
+            if (w.sizeBytes) infoParts.push(`현재 ${mb(w.sizeBytes)}MB`);
+
+            updateRenderModalUI({
+                progress: data.progress || 0,
+                desc,
+                currentTime: data.currentTime ? data.currentTime.slice(3, 8) : "00:00",
+                totalTime: formatTimeShort(data.totalDuration || STATE.webpRange.duration),
+                elapsed: data.elapsedTime,
+                fpsInfo: infoParts.length ? infoParts.join(' · ') : `${data.fps || STATE.webpFps} fps`,
+                status: "rendering"
+            });
+            return;
+        }
+
         if (data.status === 'rendering') {
             updateRenderModalUI({
                 progress: data.progress || 0,
@@ -2256,19 +2485,76 @@ async function pollRenderProgress() {
                 fpsInfo: `${data.fps || STATE.outputFps} fps (${data.speed || '1.0x'})`,
                 status: "rendering"
             });
+        } else if (data.status === 'needs_confirm') {
+            // 목표 용량을 맞추려면 해상도를 낮춰야 한다 — 사용자에게 묻는다
+            clearInterval(STATE.renderPollingTimer);
+            STATE.renderPollingTimer = null;
+
+            const w = data.webp || {};
+            const suggestion = w.suggestion || null;
+            STATE.webpSuggestion = suggestion;
+
+            const mb = (n) => (n / 1048576).toFixed(2);
+            let desc;
+            if (suggestion) {
+                desc = `${w.width}x${w.height}에서는 목표 ${mb(w.targetBytes || 0)}MB를 맞출 수 없습니다 ` +
+                       `(최소 ${mb(w.floorSizeBytes || 0)}MB).<br>` +
+                       `<strong>${suggestion.width}x${suggestion.height}</strong>로 낮추면 ` +
+                       `약 <strong>${mb(suggestion.estimatedBytes)}MB</strong>로 맞출 수 있습니다.`;
+            } else {
+                desc = `목표 용량을 맞출 수 있는 해상도가 더 없습니다. 현재 화질로 저장하거나 취소해 주세요.`;
+            }
+
+            updateRenderModalUI({
+                heading: "해상도를 낮춰야 합니다",
+                descHtml: desc,
+                elapsed: data.elapsedTime,
+                status: "needs_confirm"
+            });
+
+            if (DOM.webpConfirmBox) DOM.webpConfirmBox.classList.remove('hide');
+            if (DOM.webpConfirmDownscale) {
+                DOM.webpConfirmDownscale.classList.toggle('hide', !suggestion);
+            }
         } else if (data.status === 'completed') {
             clearInterval(STATE.renderPollingTimer);
             STATE.renderPollingTimer = null;
 
-            updateRenderModalUI({
-                progress: 100,
-                heading: "렌더링 완료!",
-                desc: "성공적으로 고화질 비디오 렌더링이 완료되었습니다.",
-                outputFile: data.outputFile || STATE.activeRenderOutput,
-                outputUrl: data.outputUrl,   // reels 폴더 저장 결과물의 스트리밍 URL
-                elapsed: data.elapsedTime,
-                status: "completed"
-            });
+            if (data.webp) {
+                // WebP 결과는 <video> 로 재생되지 않으므로 <img> 로 보여준다
+                const w = data.webp;
+                updateRenderModalUI({
+                    progress: 100,
+                    heading: "WebP 내보내기 완료!",
+                    desc: "애니메이션 WebP가 생성되었습니다.",
+                    outputFile: data.outputFile || STATE.activeRenderOutput,
+                    outputUrl: data.outputUrl,
+                    elapsed: data.elapsedTime,
+                    isAnimatedImage: true,
+                    metaRes: `${w.width} x ${w.height}`,
+                    webpStats: {
+                        width: w.width,
+                        height: w.height,
+                        quality: w.quality,
+                        sizeBytes: w.sizeBytes,
+                        targetBytes: w.targetBytes,
+                        exceededTarget: w.exceededTarget,
+                        probes: w.probes,
+                        duration: STATE.webpRange.duration
+                    },
+                    status: "completed"
+                });
+            } else {
+                updateRenderModalUI({
+                    progress: 100,
+                    heading: "렌더링 완료!",
+                    desc: "성공적으로 고화질 비디오 렌더링이 완료되었습니다.",
+                    outputFile: data.outputFile || STATE.activeRenderOutput,
+                    outputUrl: data.outputUrl,   // reels 폴더 저장 결과물의 스트리밍 URL
+                    elapsed: data.elapsedTime,
+                    status: "completed"
+                });
+            }
         } else if (data.status === 'error') {
             clearInterval(STATE.renderPollingTimer);
             STATE.renderPollingTimer = null;
@@ -2494,7 +2780,13 @@ async function runBrowserClientRender() {
 // 렌더링 모달 UI 갱신 헬퍼
 function updateRenderModalUI(data) {
     if (data.heading) DOM.renderStatusHeading.textContent = data.heading;
-    if (data.desc) DOM.renderStatusDesc.textContent = data.desc;
+    if (data.descHtml) {
+        // 우리가 만든 안내 문구(강조 포함)만 HTML 로 넣는다. 오류 메시지 등 외부 문자열은
+        // textContent 경로로만 다뤄 마크업이 해석되지 않게 한다.
+        DOM.renderStatusDesc.innerHTML = data.descHtml;
+    } else if (data.desc) {
+        DOM.renderStatusDesc.textContent = data.desc;
+    }
     
     if (data.progress !== undefined) {
         const pct = Math.round(data.progress);
@@ -2510,19 +2802,39 @@ function updateRenderModalUI(data) {
     if (data.elapsed) DOM.renderMetaTime.textContent = data.elapsed;
     if (data.fpsInfo) DOM.renderMetaFps.textContent = data.fpsInfo;
 
-    DOM.renderMetaRes.textContent = `${STATE.outputWidth} x ${STATE.outputHeight}`;
+    if (data.metaRes) DOM.renderMetaRes.textContent = data.metaRes;
+    else DOM.renderMetaRes.textContent = `${STATE.outputWidth} x ${STATE.outputHeight}`;
 
     if (data.status === 'completed') {
         DOM.renderSpinner.classList.add('hide');
         DOM.renderCompleteActions.classList.remove('hide');
         DOM.renderOutputFilename.textContent = data.outputFile || STATE.activeRenderOutput;
-        
+
         DOM.btnCancelRender.classList.add('hide');
         DOM.btnRenderDone.classList.remove('hide');
 
-        // 결과 영상 즉시 인앱 플레이어에 로드
         const videoEl = document.getElementById('rendered-result-video');
-        if (videoEl) {
+        const imageEl = DOM.renderedResultImage;
+
+        if (data.isAnimatedImage) {
+            // WebP 는 <video> 로 재생되지 않는다 — <img> 로 보여준다
+            if (videoEl) {
+                videoEl.pause();
+                videoEl.removeAttribute('src');
+                videoEl.classList.add('hide');
+            }
+            if (imageEl) {
+                const cleanPath = (data.outputUrl || data.outputFile || STATE.activeRenderOutput || '').replace(/\\/g, '/');
+                imageEl.src = (cleanPath.startsWith('/') ? cleanPath : `/${cleanPath}`) + `?t=${Date.now()}`;
+                imageEl.classList.remove('hide');
+            }
+            if (data.metaRes) DOM.renderMetaRes.textContent = data.metaRes;
+        } else if (videoEl) {
+            if (imageEl) {
+                imageEl.classList.add('hide');
+                imageEl.removeAttribute('src');
+            }
+            videoEl.classList.remove('hide');
             if (data.isBrowserBlob) {
                 videoEl.src = data.blobUrl;
             } else {
@@ -2533,9 +2845,32 @@ function updateRenderModalUI(data) {
             videoEl.play().catch(() => {}); // 자동 재생 시도
         }
 
+        // WebP 결과 요약 — 예측 가능성이 목표이므로 실제 수치를 그대로 노출한다
+        if (DOM.webpResultSummary) {
+            if (data.webpStats) {
+                const s = data.webpStats;
+                const mb = (n) => (n / 1048576).toFixed(2);
+                const over = s.exceededTarget
+                    ? ` <span class="webp-over-target">(목표 초과)</span>` : '';
+                DOM.webpResultSummary.innerHTML =
+                    `<span class="webp-stat-label">결과</span> ` +
+                    `<span class="webp-stat-value">${s.duration.toFixed(1)}초 · ${s.width}x${s.height} · ` +
+                    `q=${s.quality} · ${mb(s.sizeBytes)}MB</span>${over}<br>` +
+                    `<span class="webp-stat-label">목표</span> ` +
+                    `<span class="webp-stat-value">${mb(s.targetBytes)}MB 이하</span> · ` +
+                    `<span class="webp-stat-label">시험 인코딩</span> ` +
+                    `<span class="webp-stat-value">${s.probes}회</span>`;
+                DOM.webpResultSummary.classList.remove('hide');
+            } else {
+                DOM.webpResultSummary.classList.add('hide');
+                DOM.webpResultSummary.innerHTML = '';
+            }
+        }
+
         // 렌더 완료 후 릴스 목록 갱신 (선택 폴더 reels에 저장된 새 결과물 반영)
-        loadReels();
-        
+        // WebP 는 영상 목록에 넣지 않으므로 건너뛴다.
+        if (!data.isAnimatedImage) loadReels();
+
         if (data.isBrowserBlob) {
             DOM.btnDownloadRenderedVideo.classList.remove('hide');
             DOM.btnDownloadRenderedVideo.onclick = () => {
@@ -2560,10 +2895,16 @@ function updateRenderModalUI(data) {
                 document.body.removeChild(a);
             };
         }
+    } else if (data.status === 'needs_confirm') {
+        // 확인 UI 는 pollRenderProgress 가 띄운다. 여기서는 스피너만 멈춘다.
+        DOM.renderSpinner.classList.add('hide');
+        DOM.btnCancelRender.classList.add('hide');
+        if (data.descHtml && DOM.webpConfirmDesc) DOM.webpConfirmDesc.innerHTML = data.descHtml;
     } else if (data.status === 'error' || data.status === 'cancelled') {
         DOM.renderSpinner.classList.add('hide');
         DOM.btnCancelRender.classList.add('hide');
         DOM.btnRenderDone.classList.remove('hide');
+        if (DOM.webpConfirmBox) DOM.webpConfirmBox.classList.add('hide');
     }
 }
 
@@ -2579,8 +2920,19 @@ function openRenderModal() {
     DOM.btnDownloadRenderedVideo.classList.add('hide');
     DOM.btnRenderDone.classList.add('hide');
 
+    // WebP 전용 요소 초기화
+    if (DOM.webpConfirmBox) DOM.webpConfirmBox.classList.add('hide');
+    if (DOM.webpResultSummary) {
+        DOM.webpResultSummary.classList.add('hide');
+        DOM.webpResultSummary.innerHTML = '';
+    }
+    if (DOM.renderedResultImage) {
+        DOM.renderedResultImage.classList.add('hide');
+        DOM.renderedResultImage.removeAttribute('src');
+    }
     const videoEl = document.getElementById('rendered-result-video');
     if (videoEl) {
+        videoEl.classList.remove('hide');
         videoEl.pause();
         videoEl.removeAttribute('src');
         videoEl.load();
@@ -2610,6 +2962,169 @@ async function cancelRendering() {
             heading: "렌더링이 취소되었습니다",
             desc: "작업이 중단되었습니다.",
             status: "cancelled"
+        });
+    }
+}
+
+/* ========================================================================
+   애니메이션 WebP 내보내기
+   ======================================================================== */
+
+function updateWebpModalReadout() {
+    const range = clampWebpRange();
+    const end = range.start + range.duration;
+
+    if (DOM.webpRangeReadout) {
+        DOM.webpRangeReadout.textContent = `${range.start.toFixed(1)}초 ~ ${end.toFixed(1)}초`;
+    }
+    if (DOM.webpRangeDuration) {
+        // 프레임 수를 함께 보여주면 용량 예산 감각이 생긴다 (5초×20fps = 100프레임이 한도)
+        const fps = parseInt(DOM.webpFps?.value, 10) || STATE.webpFps;
+        const frames = Math.max(1, Math.round(range.duration * fps));
+        DOM.webpRangeDuration.textContent = `${range.duration.toFixed(1)}초 · ${frames}프레임`;
+    }
+}
+
+function openWebpModal() {
+    if (STATE.clips.filter(c => c.track === 'video1').length === 0) {
+        alert("메인 비디오 트랙(Video Track 1)에 최소 하나 이상의 비디오 클립이 있어야 합니다.");
+        return;
+    }
+
+    clampWebpRange();
+
+    DOM.webpTargetSize.value = STATE.webpTargetMB;
+    DOM.webpTargetValue.textContent = `${STATE.webpTargetMB.toFixed(1)} MB`;
+    DOM.webpFps.value = String(STATE.webpFps);
+    updateWebpModalReadout();
+
+    DOM.webpModal.classList.remove('hide');
+    DOM.webpModal.classList.add('show');
+}
+
+function closeWebpModal() {
+    DOM.webpModal.classList.remove('show');
+    setTimeout(() => DOM.webpModal.classList.add('hide'), 250);
+}
+
+// 설정 모달의 값으로 내보내기를 시작한다.
+async function startWebpExportFromModal() {
+    clampWebpRange();
+    const range = STATE.webpRange;
+    const targetMB = parseFloat(DOM.webpTargetSize.value) || STATE.webpTargetMB;
+    const fps = parseInt(DOM.webpFps.value, 10) || STATE.webpFps;
+
+    STATE.webpTargetMB = targetMB;
+    STATE.webpFps = fps;
+
+    closeWebpModal();
+
+    // 소스 파일을 서버로 동기화한 뒤 최신 localPath 로 파라미터를 만든다
+    openRenderModal();
+    updateRenderModalUI({
+        heading: "WebP 내보내기 준비 중...",
+        desc: "소스 미디어를 동기화하고 인코딩 파라미터를 구성하고 있습니다.",
+        progress: 0,
+        status: "preparing"
+    });
+
+    try {
+        await ensureAssetsUploadedToLocalServer();
+
+        const renderParams = generateFFmpegCommand({
+            ...STATE,
+            reelsFolder: currentReelsFolder
+        });
+        if (renderParams.error) throw new Error(renderParams.error);
+
+        const outputFile = buildWebpOutputPath();
+
+        const res = await fetch('/api/render/webp', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                rawInputs: renderParams.rawInputs,
+                filterComplex: renderParams.filterComplex,
+                mappedVideo: renderParams.mappedVideo,
+                mappedAudio: renderParams.mappedAudio,
+                rangeStart: range.start,
+                rangeDuration: range.duration,
+                fps,
+                targetMB,
+                outputWidth: STATE.outputWidth,
+                outputHeight: STATE.outputHeight,
+                outputFile
+            })
+        });
+
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'WebP 내보내기 시작이 거부되었습니다.');
+
+        STATE.activeRenderOutput = outputFile;
+
+        updateRenderModalUI({
+            heading: "애니메이션 WebP 인코딩 중...",
+            desc: "목표 용량에 맞춰 품질을 탐색하고 있습니다.",
+            engine: "로컬 FFmpeg (WebP 품질 탐색)",
+            status: "rendering"
+        });
+
+        if (STATE.renderPollingTimer) clearInterval(STATE.renderPollingTimer);
+        STATE.renderPollingTimer = setInterval(pollRenderProgress, 400);
+    } catch (err) {
+        console.error('WebP 내보내기 시작 실패:', err);
+        updateRenderModalUI({
+            heading: "WebP 내보내기 시작 실패",
+            desc: err.message,
+            status: "error"
+        });
+    }
+}
+
+// WebP 결과물 경로 (릴스 폴더가 선택되어 있으면 그 안에 저장)
+function buildWebpOutputPath() {
+    const stamp = formatDateForFilename(new Date());
+    const reelsFolder = String(currentReelsFolder || '');
+    const safeFolder = /^[\w가-힣\-_]+$/.test(reelsFolder) ? reelsFolder : '';
+    return safeFolder
+        ? `..\\samples\\${safeFolder}\\reels\\webp_${stamp}.webp`
+        : `output\\webp_${stamp}.webp`;
+}
+
+// 해상도 하향 확인 응답 (accept=true 면 낮춰서 진행, false 면 현재 화질로 저장)
+async function confirmWebpDownscale(accept) {
+    if (DOM.webpConfirmBox) DOM.webpConfirmBox.classList.add('hide');
+
+    if (STATE.renderPollingTimer) clearInterval(STATE.renderPollingTimer);
+
+    try {
+        const suggestion = STATE.webpSuggestion || {};
+        const payload = accept
+            ? { action: 'downscale', width: suggestion.width, height: suggestion.height }
+            : { action: 'floor' };
+
+        const res = await fetch('/api/render/webp/confirm', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || '요청이 거부되었습니다.');
+
+        updateRenderModalUI({
+            heading: accept ? "낮춘 해상도로 다시 인코딩 중..." : "현재 화질로 저장 중...",
+            desc: accept
+                ? `${suggestion.width}x${suggestion.height} 기준으로 품질을 다시 탐색합니다.`
+                : "품질 하한으로 전체 프레임을 인코딩하고 있습니다.",
+            status: "rendering"
+        });
+
+        STATE.renderPollingTimer = setInterval(pollRenderProgress, 400);
+    } catch (err) {
+        updateRenderModalUI({
+            heading: "진행할 수 없습니다",
+            desc: err.message,
+            status: "error"
         });
     }
 }
@@ -2675,7 +3190,12 @@ function confirmNewProject() {
         STATE.outputFps = 30;
         if (DOM.projectResolution) DOM.projectResolution.value = "1920x1080";
         if (DOM.projectFps) DOM.projectFps.value = "30";
-        
+
+        // WebP 내보내기 설정도 초기화
+        STATE.webpRange = { start: 0, duration: WEBP_MAX_DURATION };
+        STATE.webpTargetMB = 3;
+        STATE.webpFps = 20;
+
         updatePreviewResolution();
         selectClip(null);
         updateAssetListUI();
@@ -2704,7 +3224,11 @@ function saveProjectFile() {
         outputHeight: STATE.outputHeight,
         outputFps: STATE.outputFps,
         encoder: STATE.encoder,
-        reelsFolder: currentReelsFolder   // 릴스 불러오기에서 선택한 의류 폴더
+        reelsFolder: currentReelsFolder,  // 릴스 불러오기에서 선택한 의류 폴더
+        // 애니메이션 WebP 내보내기 설정
+        webpRange: { start: STATE.webpRange.start, duration: STATE.webpRange.duration },
+        webpTargetMB: STATE.webpTargetMB,
+        webpFps: STATE.webpFps
     };
 
     const blob = new Blob([JSON.stringify(projectData, null, 4)], { type: 'application/json' });
@@ -2746,6 +3270,18 @@ function loadProjectFile(e) {
             STATE.outputHeight = data.outputHeight || 1080;
             STATE.outputFps = data.outputFps || 30;
             STATE.encoder = data.encoder || 'h264_nvenc';
+
+            // WebP 설정 복원 (저장값이 없던 프로젝트도 안전하게 기본값으로)
+            const savedRange = data.webpRange || {};
+            STATE.webpRange = {
+                start: Number.isFinite(savedRange.start) ? savedRange.start : 0,
+                duration: Number.isFinite(savedRange.duration)
+                    ? Math.min(savedRange.duration, WEBP_MAX_DURATION)
+                    : WEBP_MAX_DURATION
+            };
+            STATE.webpTargetMB = Number.isFinite(data.webpTargetMB)
+                ? Math.min(7, Math.max(2, data.webpTargetMB)) : 3;
+            STATE.webpFps = Number.isFinite(data.webpFps) ? data.webpFps : 20;
 
             if (DOM.projectResolution) {
                 DOM.projectResolution.value = `${STATE.outputWidth}x${STATE.outputHeight}`;
