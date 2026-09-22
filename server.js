@@ -32,7 +32,7 @@ const ROOT_DIR = __dirname;
 
 // vTonSales 프로젝트 루트 (릴스 저장 폴더 스캔용)
 const PROJECT_ROOT = path.resolve(ROOT_DIR, '..');
-const VIDEO_EXTS = new Set(['.mp4', '.mov', '.webm', '.avi', '.m4v']);
+const VIDEO_EXTS = new Set(['.mp4', '.mov', '.webm', '.avi', '.m4v', '.mkv']);
 
 // MIME 타입 매핑
 const MIME_TYPES = {
@@ -50,11 +50,71 @@ const MIME_TYPES = {
     '.mov': 'video/quicktime',
     '.avi': 'video/x-msvideo',
     '.m4v': 'video/x-m4v',
+    '.mkv': 'video/x-matroska',
     '.mp3': 'audio/mpeg',
     '.wav': 'audio/wav',
     '.webp': 'image/webp',
     '.ico': 'image/x-icon'
 };
+
+// 외부 영상 폴더 목록 관리
+const EXTERNAL_FOLDERS_FILE = path.join(ROOT_DIR, 'external_folders.json');
+
+function getExternalFolders() {
+    try {
+        if (fs.existsSync(EXTERNAL_FOLDERS_FILE)) {
+            const data = JSON.parse(fs.readFileSync(EXTERNAL_FOLDERS_FILE, 'utf8'));
+            if (Array.isArray(data)) {
+                return data.filter(p => {
+                    try { return fs.existsSync(p) && fs.statSync(p).isDirectory(); } catch (e) { return false; }
+                });
+            }
+        }
+    } catch (e) {}
+    return [];
+}
+
+function saveExternalFolder(folderPath) {
+    try {
+        const resolved = path.resolve(folderPath);
+        if (!fs.existsSync(resolved) || !fs.statSync(resolved).isDirectory()) return;
+        const folders = getExternalFolders();
+        const index = folders.findIndex(f => f.toLowerCase() === resolved.toLowerCase());
+        if (index !== -1) {
+            folders.splice(index, 1);
+        }
+        folders.unshift(resolved);
+        fs.writeFileSync(EXTERNAL_FOLDERS_FILE, JSON.stringify(folders.slice(0, 30), null, 2), 'utf8');
+    } catch (e) {}
+}
+
+function runPowerShell(script, timeoutMs = 60000) {
+    return new Promise((resolve, reject) => {
+        let timer = null;
+        const ps = spawn('powershell.exe', ['-NoProfile', '-STA', '-ExecutionPolicy', 'Bypass', '-Command', script], {
+            windowsHide: false
+        });
+        let stdout = '';
+        let stderr = '';
+
+        timer = setTimeout(() => {
+            try { ps.kill(); } catch (e) {}
+            reject(new Error('다이얼로그 시간 초과 (취소됨)'));
+        }, timeoutMs);
+
+        ps.stdout.on('data', d => { stdout += d.toString('utf8'); });
+        ps.stderr.on('data', d => { stderr += d.toString('utf8'); });
+        ps.on('close', code => {
+            clearTimeout(timer);
+            if (code === 0) resolve(stdout.trim());
+            else reject(new Error(stderr || `PowerShell exited with code ${code}`));
+        });
+        ps.on('error', err => {
+            clearTimeout(timer);
+            reject(err);
+        });
+    });
+}
 
 // 렌더링 상태 관리
 let renderState = {
@@ -288,7 +348,7 @@ function startWebpExport(params) {
     });
 }
 
-const server = http.createServer((req, res) => {
+const server = http.createServer(async (req, res) => {
     // CORS 헤더 설정
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
@@ -775,7 +835,60 @@ const server = http.createServer((req, res) => {
         return;
     }
 
-    // 7. 릴스 목록 조회 (vTonSales 릴스 저장 폴더 스캔)
+    function makeReelItem(filePath, product = '', origin = 'external') {
+        const name = path.basename(filePath);
+        let size = 0;
+        let mtime = Date.now();
+        try {
+            const stat = fs.statSync(filePath);
+            size = stat.size;
+            mtime = stat.mtime.getTime();
+        } catch (e) {}
+        const base = name.slice(0, name.lastIndexOf('.'));
+        const posterPath = path.join(path.dirname(filePath), `${base}_thumb.jpg`);
+        const poster = fs.existsSync(posterPath) ? posterPath : null;
+        return {
+            name,
+            source: filePath,
+            product,
+            origin,
+            url: `/api/reels-file?path=${encodeURIComponent(filePath)}`,
+            poster: poster ? `/api/reels-file?path=${encodeURIComponent(poster)}` : null,
+            size,
+            mtime
+        };
+    }
+
+    function scanFolderForReels(folderPath, maxDepth = 2) {
+        const results = [];
+        const seen = new Set();
+        function walk(dir, depth) {
+            if (depth > maxDepth) return;
+            try {
+                const entries = fs.readdirSync(dir, { withFileTypes: true });
+                for (const entry of entries) {
+                    const fullPath = path.join(dir, entry.name);
+                    if (entry.isDirectory()) {
+                        if (entry.name.startsWith('.') || entry.name === 'node_modules' || entry.name === '$RECYCLE.BIN' || entry.name === '추출사진') continue;
+                        walk(fullPath, depth + 1);
+                    } else if (entry.isFile()) {
+                        const ext = path.extname(entry.name).toLowerCase();
+                        if (VIDEO_EXTS.has(ext)) {
+                            const key = fullPath.toLowerCase();
+                            if (!seen.has(key)) {
+                                seen.add(key);
+                                results.push(makeReelItem(fullPath, folderPath, 'external'));
+                            }
+                        }
+                    }
+                }
+            } catch (e) {}
+        }
+        walk(folderPath, 0);
+        return results;
+    }
+
+    // 7. 릴스 목록 조회 (vTonSales 릴스 저장 폴더 및 외부 등록 폴더 스캔)
     if (pathname === '/api/reels/list' && req.method === 'GET') {
         const reels = [];
         const seen = new Set();
@@ -784,21 +897,7 @@ const server = http.createServer((req, res) => {
             const key = filePath.toLowerCase();
             if (seen.has(key)) return;
             seen.add(key);
-            const name = path.basename(filePath);
-            const stat = fs.statSync(filePath);
-            const base = name.slice(0, name.lastIndexOf('.'));
-            const posterPath = path.join(path.dirname(filePath), `${base}_thumb.jpg`);
-            const poster = fs.existsSync(posterPath) ? posterPath : null;
-            reels.push({
-                name,
-                source: filePath,
-                product,
-                origin,
-                url: `/api/reels-file?path=${encodeURIComponent(filePath)}`,
-                poster: poster ? `/api/reels-file?path=${encodeURIComponent(poster)}` : null,
-                size: stat.size,
-                mtime: stat.mtime.getTime()
-            });
+            reels.push(makeReelItem(filePath, product, origin));
         };
 
         try {
@@ -822,8 +921,6 @@ const server = http.createServer((req, res) => {
                             }
                         }
                     }
-                    // 릴스 유무와 관계없이 모든 의류 폴더를 셀렉트에 노출
-                    // (SNSReelsPostor STEP 1 패턴, spec.json에서 상품명/카테고리 읽기)
                     let displayName = productDir;
                     let category = '';
                     try {
@@ -852,8 +949,37 @@ const server = http.createServer((req, res) => {
                 }
             }
 
+            // 3) 외부 등록 폴더 스캔
+            const extFolders = getExternalFolders();
+            for (const extDir of extFolders) {
+                if (!fs.existsSync(extDir)) continue;
+                let extCount = 0;
+                try {
+                    const files = fs.readdirSync(extDir);
+                    for (const f of files) {
+                        if (!VIDEO_EXTS.has(path.extname(f).toLowerCase())) continue;
+                        const filePath = path.join(extDir, f);
+                        if (fs.statSync(filePath).isFile()) {
+                            addReel(filePath, extDir, 'external');
+                            extCount++;
+                        }
+                    }
+                    folders.set(extDir, {
+                        name: extDir,
+                        displayName: `[외부] ${path.basename(extDir)}`,
+                        category: '외부 폴더',
+                        count: extCount,
+                        isExternal: true
+                    });
+                } catch (e) {}
+            }
+
             reels.sort((a, b) => b.mtime - a.mtime);
-            const folderList = Array.from(folders.values()).sort((a, b) => a.name.localeCompare(b.name));
+            const folderList = Array.from(folders.values()).sort((a, b) => {
+                if (a.isExternal && !b.isExternal) return -1;
+                if (!a.isExternal && b.isExternal) return 1;
+                return a.name.localeCompare(b.name);
+            });
             res.writeHead(200, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify({ success: true, folders: folderList, reels }));
             return;
@@ -865,7 +991,7 @@ const server = http.createServer((req, res) => {
         }
     }
 
-    // 8. 릴스/외부 파일 서빙 (프로젝트 루트 내 경로만 허용, HTTP 206 Range 지원)
+    // 8. 릴스/외부 파일 서빙 (로컬 PC의 모든 미디어 파일 지원, HTTP 206 Range 지원)
     if (pathname === '/api/reels-file' && req.method === 'GET') {
         const rawPath = parsedUrl.searchParams.get('path');
         if (!rawPath) {
@@ -881,24 +1007,24 @@ const server = http.createServer((req, res) => {
             res.end(JSON.stringify({ error: 'invalid path' }));
             return;
         }
-        const allowed = [PROJECT_ROOT, ROOT_DIR].some(root =>
-            targetPath === root || targetPath.startsWith(root + path.sep)
-        );
-        if (!allowed) {
+
+        const ext = path.extname(targetPath).toLowerCase();
+        const isMedia = VIDEO_EXTS.has(ext) || Boolean(MIME_TYPES[ext]);
+        if (!isMedia) {
             res.writeHead(403, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify({ error: 'Access denied' }));
+            res.end(JSON.stringify({ error: 'Access denied: not a media file' }));
             return;
         }
+
         fs.stat(targetPath, (err, stats) => {
             if (err || !stats.isFile()) {
                 res.writeHead(404, { 'Content-Type': 'application/json' });
                 res.end(JSON.stringify({ error: 'File not found' }));
                 return;
             }
-            const ext = path.extname(targetPath).toLowerCase();
             const contentType = MIME_TYPES[ext] || 'application/octet-stream';
             const range = req.headers.range;
-            if (range && (ext === '.mp4' || ext === '.webm' || ext === '.mp3' || ext === '.mov' || ext === '.avi' || ext === '.m4v')) {
+            if (range && (VIDEO_EXTS.has(ext) || ext === '.mp3' || ext === '.wav')) {
                 const parts = range.replace(/bytes=/, "").split("-");
                 const start = parseInt(parts[0], 10);
                 const end = parts[1] ? parseInt(parts[1], 10) : stats.size - 1;
@@ -922,6 +1048,333 @@ const server = http.createServer((req, res) => {
         });
         return;
     }
+
+    // 9. Windows 파일 선택 다이얼로그 (외부 동영상 파일 선택)
+    if (pathname === '/api/dialog/open-video' && req.method === 'POST') {
+        try {
+            const script = `Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.Application]::EnableVisualStyles(); $f = New-Object System.Windows.Forms.OpenFileDialog; $f.Title = '외부 동영상 파일 선택'; $f.Filter = '동영상 파일 (*.mp4;*.mov;*.webm;*.avi;*.mkv;*.m4v)|*.mp4;*.mov;*.webm;*.avi;*.mkv;*.m4v|모든 파일 (*.*)|*.*'; $f.Multiselect = $true; if ($f.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { $f.FileNames -join [char]10 }`;
+            const output = await runPowerShell(script, 45000);
+            const filePaths = output ? output.split(/\r?\n/).map(s => s.trim()).filter(Boolean) : [];
+            const results = [];
+            for (const fp of filePaths) {
+                if (fs.existsSync(fp)) {
+                    saveExternalFolder(path.dirname(fp));
+                    results.push(makeReelItem(fp, path.dirname(fp), 'external'));
+                }
+            }
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ success: true, files: results }));
+        } catch (e) {
+            console.error('[LookVideoEditor] 파일 다이얼로그 실패:', e.message);
+            res.writeHead(500, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ success: false, error: e.message }));
+        }
+        return;
+    }
+
+    // 10. Windows 폴더 선택 다이얼로그 (외부 동영상 폴더 선택)
+    if (pathname === '/api/dialog/open-folder' && req.method === 'POST') {
+        try {
+            const script = `Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.Application]::EnableVisualStyles(); $f = New-Object System.Windows.Forms.FolderBrowserDialog; $f.Description = '동영상이 있는 폴더를 선택하세요'; $f.ShowNewFolderButton = $false; if ($f.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { $f.SelectedPath }`;
+            const selectedFolder = await runPowerShell(script, 45000);
+            if (selectedFolder && fs.existsSync(selectedFolder)) {
+                saveExternalFolder(selectedFolder);
+                const results = scanFolderForReels(selectedFolder, 1);
+                res.writeHead(200, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({
+                    success: true,
+                    folder: selectedFolder,
+                    folderName: path.basename(selectedFolder),
+                    files: results
+                }));
+            } else {
+                res.writeHead(200, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ success: true, cancelled: true, files: [] }));
+            }
+        } catch (e) {
+            console.error('[LookVideoEditor] 폴더 다이얼로그 실패:', e.message);
+            res.writeHead(500, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ success: false, error: e.message }));
+        }
+        return;
+    }
+
+    // 11. 외부 폴더 경로 직접 스캔 (/api/external-videos/scan)
+    if (pathname === '/api/external-videos/scan' && req.method === 'POST') {
+        let body = '';
+        req.on('data', chunk => { body += chunk; });
+        req.on('end', () => {
+            try {
+                const data = JSON.parse(body || '{}');
+                const folderPath = data.folderPath ? path.resolve(data.folderPath) : null;
+                if (!folderPath || !fs.existsSync(folderPath) || !fs.statSync(folderPath).isDirectory()) {
+                    res.writeHead(400, { 'Content-Type': 'application/json' });
+                    res.end(JSON.stringify({ success: false, error: '유효한 폴더 경로가 아닙니다.' }));
+                    return;
+                }
+                saveExternalFolder(folderPath);
+                const results = scanFolderForReels(folderPath, 1);
+                res.writeHead(200, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({
+                    success: true,
+                    folder: folderPath,
+                    folderName: path.basename(folderPath),
+                    files: results
+                }));
+            } catch (e) {
+                res.writeHead(500, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ success: false, error: e.message }));
+            }
+        });
+        return;
+    }
+
+    // 12. 외부 파일 경로 배열 검증 및 추가 (/api/external-videos/files)
+    if (pathname === '/api/external-videos/files' && req.method === 'POST') {
+        let body = '';
+        req.on('data', chunk => { body += chunk; });
+        req.on('end', () => {
+            try {
+                const data = JSON.parse(body || '{}');
+                const filePaths = Array.isArray(data.filePaths) ? data.filePaths : [];
+                const results = [];
+                for (const fp of filePaths) {
+                    if (typeof fp === 'string' && fs.existsSync(fp)) {
+                        const resolved = path.resolve(fp);
+                        if (fs.statSync(resolved).isFile() && VIDEO_EXTS.has(path.extname(resolved).toLowerCase())) {
+                            saveExternalFolder(path.dirname(resolved));
+                            results.push(makeReelItem(resolved, path.dirname(resolved), 'external'));
+                        }
+                    }
+                }
+                res.writeHead(200, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ success: true, files: results }));
+            } catch (e) {
+                res.writeHead(500, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ success: false, error: e.message }));
+            }
+        });
+        return;
+    }
+
+    // 13. 타임라인 장면 사진 추출 및 저장 (/api/extract-frame)
+    if (pathname === '/api/extract-frame' && req.method === 'POST') {
+        let body = '';
+        req.on('data', chunk => { body += chunk; });
+        req.on('end', () => {
+            try {
+                const data = JSON.parse(body || '{}');
+                const { videoPath, timestamp = 0, rotation = 0, canvasData, clipName } = data;
+
+                let resolvedVideoPath = null;
+                if (videoPath) {
+                    try {
+                        const p = path.resolve(videoPath);
+                        if (fs.existsSync(p) && fs.statSync(p).isFile()) {
+                            resolvedVideoPath = p;
+                        }
+                    } catch (e) {}
+                }
+
+                // 동영상이 있는 폴더 찾기
+                let targetDir;
+                if (resolvedVideoPath) {
+                    targetDir = path.dirname(resolvedVideoPath);
+                } else {
+                    // 비디오 경로가 없는 경우 기본 output 폴더 사용
+                    targetDir = path.join(ROOT_DIR, 'output');
+                }
+
+                // 해당 동영상이 있는 폴더에 '추출사진' 폴더 생성
+                const extractDir = path.join(targetDir, '추출사진');
+                if (!fs.existsSync(extractDir)) {
+                    fs.mkdirSync(extractDir, { recursive: true });
+                }
+
+                // 파일명 생성: {영상명}_{분m초s밀리초}.png
+                const sec = Math.max(0, parseFloat(timestamp) || 0);
+                const m = Math.floor(sec / 60);
+                const s = Math.floor(sec % 60);
+                const ms = Math.floor((sec % 1) * 100);
+                const timeStr = `${m.toString().padStart(2, '0')}m${s.toString().padStart(2, '0')}s${ms.toString().padStart(2, '0')}`;
+
+                let rawBaseName = resolvedVideoPath
+                    ? path.basename(resolvedVideoPath, path.extname(resolvedVideoPath))
+                    : (clipName || 'scene');
+                rawBaseName = rawBaseName.replace(/[\/\\:*?"<>|]/g, '_');
+
+                let targetFilename = `${rawBaseName}_${timeStr}.png`;
+                let outputPath = path.join(extractDir, targetFilename);
+                let counter = 1;
+                while (fs.existsSync(outputPath)) {
+                    targetFilename = `${rawBaseName}_${timeStr}_${counter}.png`;
+                    outputPath = path.join(extractDir, targetFilename);
+                    counter++;
+                }
+
+                // 1순위: FFmpeg를 통한 원본 고화질 프레임 무손실 추출
+                if (resolvedVideoPath) {
+                    const ffmpegBin = getFFmpegBinary();
+                    const args = ['-y', '-ss', sec.toFixed(3), '-i', resolvedVideoPath];
+
+                    const rot = parseInt(rotation, 10) || 0;
+                    const vf = [];
+                    if (rot === 90) vf.push('transpose=1');
+                    else if (rot === 180) vf.push('transpose=2,transpose=2');
+                    else if (rot === 270) vf.push('transpose=2');
+
+                    if (vf.length > 0) {
+                        args.push('-vf', vf.join(','));
+                    }
+                    args.push('-vframes', '1', '-q:v', '2', outputPath);
+
+                    console.log(`[LookVideoEditor] 사진 추출 시작: ${ffmpegBin} ${args.join(' ')}`);
+
+                    const child = spawn(ffmpegBin, args);
+                    let stderr = '';
+                    child.stderr.on('data', d => { stderr += d.toString('utf8'); });
+
+                    child.on('close', code => {
+                        if (code === 0 && fs.existsSync(outputPath)) {
+                            console.log(`[LookVideoEditor] 사진 추출 성공: ${outputPath}`);
+                            res.writeHead(200, { 'Content-Type': 'application/json' });
+                            res.end(JSON.stringify({
+                                success: true,
+                                filename: targetFilename,
+                                savedPath: outputPath,
+                                folder: extractDir,
+                                url: `/api/reels-file?path=${encodeURIComponent(outputPath)}`
+                            }));
+                        } else {
+                            console.warn(`[LookVideoEditor] FFmpeg 사진 추출 실패(코드 ${code}), Canvas 폴백 시도:`, stderr.slice(-300));
+                            if (canvasData && canvasData.startsWith('data:image/')) {
+                                try {
+                                    const base64Data = canvasData.replace(/^data:image\/\w+;base64,/, '');
+                                    fs.writeFileSync(outputPath, Buffer.from(base64Data, 'base64'));
+                                    res.writeHead(200, { 'Content-Type': 'application/json' });
+                                    res.end(JSON.stringify({
+                                        success: true,
+                                        filename: targetFilename,
+                                        savedPath: outputPath,
+                                        folder: extractDir,
+                                        url: `/api/reels-file?path=${encodeURIComponent(outputPath)}`,
+                                        fallback: true
+                                    }));
+                                    return;
+                                } catch (err) {
+                                    res.writeHead(500, { 'Content-Type': 'application/json' });
+                                    res.end(JSON.stringify({ success: false, error: err.message }));
+                                    return;
+                                }
+                            }
+                            res.writeHead(500, { 'Content-Type': 'application/json' });
+                            res.end(JSON.stringify({ success: false, error: `FFmpeg failed with code ${code}` }));
+                        }
+                    });
+
+                    child.on('error', err => {
+                        console.warn('[LookVideoEditor] FFmpeg 실행 에러, Canvas 폴백 시도:', err.message);
+                        if (canvasData && canvasData.startsWith('data:image/')) {
+                            try {
+                                const base64Data = canvasData.replace(/^data:image\/\w+;base64,/, '');
+                                fs.writeFileSync(outputPath, Buffer.from(base64Data, 'base64'));
+                                res.writeHead(200, { 'Content-Type': 'application/json' });
+                                res.end(JSON.stringify({
+                                    success: true,
+                                    filename: targetFilename,
+                                    savedPath: outputPath,
+                                    folder: extractDir,
+                                    url: `/api/reels-file?path=${encodeURIComponent(outputPath)}`,
+                                    fallback: true
+                                }));
+                                return;
+                            } catch (writeErr) {
+                                res.writeHead(500, { 'Content-Type': 'application/json' });
+                                res.end(JSON.stringify({ success: false, error: writeErr.message }));
+                                return;
+                            }
+                        }
+                        res.writeHead(500, { 'Content-Type': 'application/json' });
+                        res.end(JSON.stringify({ success: false, error: err.message }));
+                    });
+                } else if (canvasData && canvasData.startsWith('data:image/')) {
+                    // 2순위: 캔버스 데이터로 직접 저장
+                    try {
+                        const base64Data = canvasData.replace(/^data:image\/\w+;base64,/, '');
+                        fs.writeFileSync(outputPath, Buffer.from(base64Data, 'base64'));
+                        console.log(`[LookVideoEditor] Canvas 사진 추출 저장 완료: ${outputPath}`);
+                        res.writeHead(200, { 'Content-Type': 'application/json' });
+                        res.end(JSON.stringify({
+                            success: true,
+                            filename: targetFilename,
+                            savedPath: outputPath,
+                            folder: extractDir,
+                            url: `/api/reels-file?path=${encodeURIComponent(outputPath)}`
+                        }));
+                    } catch (err) {
+                        res.writeHead(500, { 'Content-Type': 'application/json' });
+                        res.end(JSON.stringify({ success: false, error: err.message }));
+                    }
+                } else {
+                    res.writeHead(400, { 'Content-Type': 'application/json' });
+                    res.end(JSON.stringify({ success: false, error: '유효한 비디오 경로 또는 캔버스 이미지가 없습니다.' }));
+                }
+            } catch (err) {
+                res.writeHead(500, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ success: false, error: err.message }));
+            }
+        });
+        return;
+    }
+
+    // 14. 추출된 사진 파일 탐색기에서 선택 (/api/open-extracted-photo)
+    if (pathname === '/api/open-extracted-photo' && req.method === 'POST') {
+        let body = '';
+        req.on('data', chunk => { body += chunk; });
+        req.on('end', () => {
+            try {
+                const data = JSON.parse(body || '{}');
+                const filePath = data.path ? path.resolve(data.path) : null;
+                if (filePath && fs.existsSync(filePath)) {
+                    spawn('explorer.exe', [`/select,${filePath}`], { detached: true, stdio: 'ignore' }).unref();
+                    res.writeHead(200, { 'Content-Type': 'application/json' });
+                    res.end(JSON.stringify({ success: true, opened: filePath }));
+                } else {
+                    res.writeHead(404, { 'Content-Type': 'application/json' });
+                    res.end(JSON.stringify({ success: false, error: '파일을 찾을 수 없습니다.' }));
+                }
+            } catch (e) {
+                res.writeHead(500, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ success: false, error: e.message }));
+            }
+        });
+        return;
+    }
+
+    // 15. 추출사진 폴더 탐색기로 열기 (/api/open-extract-folder)
+    if (pathname === '/api/open-extract-folder' && req.method === 'POST') {
+        let body = '';
+        req.on('data', chunk => { body += chunk; });
+        req.on('end', () => {
+            try {
+                const data = JSON.parse(body || '{}');
+                const folderPath = data.folder ? path.resolve(data.folder) : (data.path ? path.dirname(path.resolve(data.path)) : null);
+                if (folderPath && fs.existsSync(folderPath)) {
+                    spawn('explorer.exe', [folderPath], { detached: true, stdio: 'ignore' }).unref();
+                    res.writeHead(200, { 'Content-Type': 'application/json' });
+                    res.end(JSON.stringify({ success: true, opened: folderPath }));
+                } else {
+                    res.writeHead(404, { 'Content-Type': 'application/json' });
+                    res.end(JSON.stringify({ success: false, error: '폴더를 찾을 수 없습니다.' }));
+                }
+            } catch (e) {
+                res.writeHead(500, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ success: false, error: e.message }));
+            }
+        });
+        return;
+    }
+
 
     // --- 정적 파일 서빙 (HTTP 206 Partial Content 비디오 스트리밍 지원) ---
     let safePath = path.normalize(pathname).replace(/^(\.\.[\/\\])+/, '');

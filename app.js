@@ -187,7 +187,31 @@ const DOM = {
 
     // 타임라인 WebP 구간 밴드
     webpRangeBand: document.getElementById('webp-range-band'),
-    webpRangeLabel: document.getElementById('webp-range-label')
+    webpRangeLabel: document.getElementById('webp-range-label'),
+
+    // 외부 영상 불러오기 관련 요소
+    btnOpenExternalVideo: document.getElementById('btn-open-external-video'),
+    externalVideoMenu: document.getElementById('external-video-menu'),
+    btnExtSelectFiles: document.getElementById('btn-ext-select-files'),
+    btnExtSelectFolder: document.getElementById('btn-ext-select-folder'),
+    btnExtInputPath: document.getElementById('btn-ext-input-path'),
+    inputExternalVideoFiles: document.getElementById('input-external-video-files'),
+    pathInputModal: document.getElementById('path-input-modal'),
+    inputFolderPath: document.getElementById('input-folder-path'),
+    btnClosePathModal: document.getElementById('btn-close-path-modal'),
+    btnCancelPathModal: document.getElementById('btn-cancel-path-modal'),
+    btnConfirmPathModal: document.getElementById('btn-confirm-path-modal'),
+
+    // 사진 추출 및 셔터 관련 요소
+    btnPlayerCapture: document.getElementById('btn-player-capture'),
+    btnTimelineCapture: document.getElementById('btn-timeline-capture'),
+    shutterFlash: document.getElementById('shutter-flash'),
+    photoExtractToast: document.getElementById('photo-extract-toast'),
+    toastPhotoImg: document.getElementById('toast-photo-img'),
+    toastPhotoFilename: document.getElementById('toast-photo-filename'),
+    toastPhotoFolder: document.getElementById('toast-photo-folder'),
+    btnToastOpenFolder: document.getElementById('btn-toast-open-folder'),
+    btnToastClose: document.getElementById('btn-toast-close')
 };
 
 // Canvas 컨텍스트 및 오버레이 버퍼 캐시
@@ -847,8 +871,21 @@ function createHiddenPlayerForAsset(asset) {
             asset.duration = video.duration || asset.duration || 10.0;
             updateAssetListUI();
             updateTimelineClipsUI();
+            // 첫 프레임 강제 디코딩을 위해 0.001초로 시크
+            try {
+                if (video.currentTime === 0) video.currentTime = 0.001;
+            } catch (e) {}
             renderPreview();
         };
+        video.addEventListener('loadeddata', () => {
+            renderPreview();
+        });
+        video.addEventListener('canplay', () => {
+            renderPreview();
+        });
+        video.addEventListener('seeked', () => {
+            if (!STATE.isPlaying) renderPreview();
+        });
         video.onerror = () => {
             console.warn('[LookVideoEditor] 미디어 프리뷰 로드 실패:', asset.name);
             asset.isPreviewDisabled = true;
@@ -913,6 +950,319 @@ function addReelToEditor(reel) {
     updateAssetListUI();
 }
 
+// ── 외부 영상 로드 및 관리 ─────────────────────────────────────────────
+function toggleExternalVideoMenu(show) {
+    if (!DOM.externalVideoMenu) return;
+    const isHidden = DOM.externalVideoMenu.classList.contains('hide');
+    const target = show !== undefined ? show : isHidden;
+    if (target) {
+        DOM.externalVideoMenu.classList.remove('hide');
+    } else {
+        DOM.externalVideoMenu.classList.add('hide');
+    }
+}
+
+async function openExternalVideoFiles() {
+    toggleExternalVideoMenu(false);
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), 6000);
+    try {
+        const res = await fetch('/api/dialog/open-video', { method: 'POST', signal: ctrl.signal });
+        clearTimeout(t);
+        const data = await res.json();
+        if (data.success && data.files && data.files.length > 0) {
+            handleExternalVideosAdded(data.files, pathDirname(data.files[0].source));
+            return;
+        }
+    } catch (e) {
+        clearTimeout(t);
+        console.warn('Windows 파일 다이얼로그 응답 없음/실패, 브라우저 파일 선택기 폴백:', e.message);
+    }
+    // 브라우저 파일 선택기 폴백
+    if (DOM.inputExternalVideoFiles) DOM.inputExternalVideoFiles.click();
+}
+
+async function openExternalVideoFolder() {
+    toggleExternalVideoMenu(false);
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), 6000);
+    try {
+        const res = await fetch('/api/dialog/open-folder', { method: 'POST', signal: ctrl.signal });
+        clearTimeout(t);
+        const data = await res.json();
+        if (data.success && data.files && data.files.length > 0) {
+            handleExternalVideosAdded(data.files, data.folder);
+            return;
+        } else if (data.folder && (!data.files || data.files.length === 0)) {
+            alert(`선택한 폴더에 지원되는 동영상 파일(.mp4, .mov, .webm, .avi, .mkv)이 없습니다:\n${data.folder}`);
+            return;
+        }
+    } catch (e) {
+        clearTimeout(t);
+        console.warn('Windows 폴더 다이얼로그 응답 없음/실패, 폴더 경로 입력 모달 폴백:', e.message);
+    }
+    // 폴더 경로 입력 모달 폴백
+    openPathModal();
+}
+
+function openPathModal() {
+    toggleExternalVideoMenu(false);
+    if (!DOM.pathInputModal) return;
+    DOM.pathInputModal.classList.remove('hide');
+    renderRecentFolderChips();
+    if (DOM.inputFolderPath) {
+        DOM.inputFolderPath.value = '';
+        setTimeout(() => DOM.inputFolderPath.focus(), 100);
+    }
+}
+
+function renderRecentFolderChips() {
+    const container = document.getElementById('recent-folders-chips');
+    if (!container) return;
+    container.innerHTML = '';
+
+    const suggestions = [
+        'D:\\LOOKLOOKLOOK\\참고동영상\\실외룩북',
+        'D:\\LOOKLOOKLOOK\\homepage\\vTonSales\\samples\\_colorconvertor\\reels'
+    ];
+
+    if (Array.isArray(reelsFolders)) {
+        reelsFolders.forEach(f => {
+            if (f.isExternal && f.name && !suggestions.includes(f.name)) {
+                suggestions.push(f.name);
+            }
+        });
+    }
+
+    suggestions.forEach(folderPath => {
+        const item = document.createElement('button');
+        item.type = 'button';
+        item.className = 'btn btn-sm btn-outline';
+        item.style.cssText = 'text-align: left; padding: 6px 10px; font-size: 0.8rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: flex; align-items: center; gap: 8px;';
+        item.innerHTML = `<i class="fa-solid fa-folder" style="color: var(--accent);"></i> <span style="overflow: hidden; text-overflow: ellipsis;">${escapeHtml(folderPath)}</span>`;
+        item.title = folderPath;
+        item.addEventListener('click', () => {
+            if (DOM.inputFolderPath) {
+                DOM.inputFolderPath.value = folderPath;
+            }
+            confirmPathModal();
+        });
+        container.appendChild(item);
+    });
+}
+
+function closePathModal() {
+    if (!DOM.pathInputModal) return;
+    DOM.pathInputModal.classList.add('hide');
+}
+
+async function confirmPathModal() {
+    if (!DOM.inputFolderPath) return;
+    const p = DOM.inputFolderPath.value.trim();
+    if (!p) {
+        alert('폴더 경로를 입력하세요.');
+        return;
+    }
+    await scanExternalFolderByPath(p);
+}
+
+async function scanExternalFolderByPath(folderPath) {
+    try {
+        const res = await fetch('/api/external-videos/scan', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ folderPath })
+        });
+        const data = await res.json();
+        if (data.success && data.files && data.files.length > 0) {
+            handleExternalVideosAdded(data.files, data.folder);
+            closePathModal();
+        } else if (data.success) {
+            alert(`해당 폴더에 지원되는 동영상 파일이 없습니다:\n${data.folder}`);
+        } else {
+            alert(`폴더 로드 실패: ${data.error || '폴더를 찾을 수 없습니다.'}`);
+        }
+    } catch (e) {
+        alert('서버 통신 실패: ' + e.message);
+    }
+}
+
+function pathDirname(filePath) {
+    if (!filePath) return '';
+    const parts = filePath.split(/[\\/]/);
+    parts.pop();
+    return parts.join('\\');
+}
+
+function handleExternalVideosAdded(files, switchFolder = null) {
+    if (!files || files.length === 0) return;
+    let addedCount = 0;
+    files.forEach(reel => {
+        const key = reel.source.toLowerCase();
+        const existingIdx = reelsList.findIndex(r => r.source.toLowerCase() === key);
+        if (existingIdx !== -1) {
+            reelsList[existingIdx] = reel;
+        } else {
+            reelsList.unshift(reel);
+            addedCount++;
+        }
+    });
+
+    if (switchFolder) {
+        currentReelsFolder = switchFolder;
+        if (!reelsFolders.some(f => f.name === switchFolder)) {
+            const folderName = switchFolder.split(/[\\/]/).filter(Boolean).pop() || switchFolder;
+            reelsFolders.unshift({
+                name: switchFolder,
+                displayName: `[외부] ${folderName}`,
+                category: '외부 폴더',
+                count: files.length,
+                isExternal: true
+            });
+        }
+    }
+
+    renderReelsFolderSelect();
+    renderReelsGrid();
+}
+
+// ── 타임라인 현재 장면 사진 추출 ─────────────────────────────────────
+let lastExtractedPhoto = null;
+
+async function extractScenePhoto() {
+    // 1. 타임라인에 클립이 존재하는지 확인
+    if (!STATE.clips || STATE.clips.length === 0) {
+        alert('타임라인에 비디오 클립이 없습니다. 먼저 영상을 타임라인에 추가해 주세요.');
+        return;
+    }
+
+    const time = STATE.playheadTime;
+
+    // 2. 현재 재생헤드 시점의 비디오 클립 탐색
+    let targetClip = null;
+    if (STATE.selectedClipId) {
+        const sel = STATE.clips.find(c => c.id === STATE.selectedClipId && (c.track === 'video1' || c.track === 'video2'));
+        if (sel) targetClip = sel;
+    }
+    if (!targetClip) {
+        targetClip = STATE.clips.find(c => c.track === 'video1' && time >= c.timelineStart && time <= c.timelineStart + c.duration);
+    }
+    if (!targetClip) {
+        targetClip = STATE.clips.find(c => c.track === 'video2' && time >= c.timelineStart && time <= c.timelineStart + c.duration);
+    }
+    if (!targetClip) {
+        targetClip = STATE.clips.find(c => c.track === 'video1' || c.track === 'video2');
+    }
+
+    if (!targetClip) {
+        alert('사진을 추출할 비디오 클립을 찾을 수 없습니다.');
+        return;
+    }
+
+    // 3. 비디오 원본 파일 내의 실제 재생 시점 계산
+    const clipElapsed = Math.max(0, time - targetClip.timelineStart);
+    const speed = targetClip.speed || 1.0;
+    const sourcePlayTime = Math.max(0, targetClip.sourceStart + clipElapsed * speed);
+
+    // 4. 프리뷰 화면 셔터 플래시 애니메이션
+    triggerShutterFlash();
+
+    // 5. 브라우저 캔버스 데이터 추출 (폴백 및 즉시 미리보기용)
+    let canvasData = null;
+    try {
+        canvasData = DOM.previewCanvas.toDataURL('image/png');
+    } catch (e) {
+        console.warn('Canvas toDataURL failed:', e);
+    }
+
+    // 6. 서버로 추출 및 저장 요청 (해당 동영상 폴더 안의 '추출사진' 폴더로 저장)
+    try {
+        const payload = {
+            videoPath: targetClip.localPath || '',
+            timestamp: sourcePlayTime,
+            rotation: targetClip.rotation || 0,
+            clipName: targetClip.name || 'video',
+            canvasData: canvasData
+        };
+
+        const res = await fetch('/api/extract-frame', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        });
+
+        const data = await res.json();
+        if (!res.ok || !data.success) {
+            throw new Error(data.error || '사진 추출에 실패했습니다.');
+        }
+
+        lastExtractedPhoto = data;
+        showPhotoExtractToast(data, canvasData);
+    } catch (err) {
+        console.error('Frame extraction failed:', err);
+        alert('사진 추출 오류: ' + err.message);
+    }
+}
+
+function triggerShutterFlash() {
+    const flash = DOM.shutterFlash;
+    if (!flash) return;
+    flash.classList.remove('hide');
+    flash.classList.remove('animate');
+    void flash.offsetWidth; // Force reflow
+    flash.classList.add('animate');
+    setTimeout(() => {
+        flash.classList.add('hide');
+        flash.classList.remove('animate');
+    }, 350);
+}
+
+function showPhotoExtractToast(data, fallbackImgUrl) {
+    const toast = DOM.photoExtractToast;
+    if (!toast) return;
+
+    if (DOM.toastPhotoImg) {
+        DOM.toastPhotoImg.src = data.url || fallbackImgUrl || '';
+    }
+    if (DOM.toastPhotoFilename) {
+        DOM.toastPhotoFilename.textContent = data.filename;
+        DOM.toastPhotoFilename.title = data.savedPath;
+    }
+    if (DOM.toastPhotoFolder) {
+        DOM.toastPhotoFolder.textContent = data.folder;
+        DOM.toastPhotoFolder.title = data.folder;
+    }
+
+    toast.classList.remove('hide');
+    void toast.offsetWidth; // Force reflow
+    toast.classList.add('show');
+
+    if (window._extractToastTimer) clearTimeout(window._extractToastTimer);
+    window._extractToastTimer = setTimeout(() => {
+        hidePhotoExtractToast();
+    }, 7000);
+}
+
+function hidePhotoExtractToast() {
+    const toast = DOM.photoExtractToast;
+    if (!toast) return;
+    toast.classList.remove('show');
+    setTimeout(() => toast.classList.add('hide'), 300);
+}
+
+async function openExtractedPhotoFolder() {
+    if (!lastExtractedPhoto) return;
+    try {
+        await fetch('/api/open-extracted-photo', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ path: lastExtractedPhoto.savedPath })
+        });
+    } catch (e) {
+        console.error('Open folder error:', e);
+    }
+}
+
 function initReelsLoader() {
     const refreshBtn = document.getElementById('btn-refresh-reels');
     if (refreshBtn) {
@@ -925,8 +1275,79 @@ function initReelsLoader() {
             renderReelsGrid();
         });
     }
+
+    // 외부 영상 불러오기 버튼 및 메뉴
+    if (DOM.btnOpenExternalVideo) {
+        DOM.btnOpenExternalVideo.addEventListener('click', (e) => {
+            e.stopPropagation();
+            toggleExternalVideoMenu();
+        });
+    }
+    document.addEventListener('click', (e) => {
+        if (DOM.externalVideoMenu && !DOM.externalVideoMenu.classList.contains('hide')) {
+            if (!DOM.externalVideoMenu.contains(e.target) && e.target !== DOM.btnOpenExternalVideo) {
+                toggleExternalVideoMenu(false);
+            }
+        }
+    });
+    if (DOM.btnExtSelectFiles) {
+        DOM.btnExtSelectFiles.addEventListener('click', openExternalVideoFiles);
+    }
+    if (DOM.btnExtSelectFolder) {
+        DOM.btnExtSelectFolder.addEventListener('click', openExternalVideoFolder);
+    }
+    if (DOM.btnExtInputPath) {
+        DOM.btnExtInputPath.addEventListener('click', openPathModal);
+    }
+    if (DOM.inputExternalVideoFiles) {
+        DOM.inputExternalVideoFiles.addEventListener('change', (e) => {
+            if (e.target.files && e.target.files.length > 0) {
+                handleMediaImport(e.target.files);
+                e.target.value = '';
+            }
+        });
+    }
+
+    // 외부 경로 입력 모달
+    if (DOM.btnClosePathModal) DOM.btnClosePathModal.addEventListener('click', closePathModal);
+    if (DOM.btnCancelPathModal) DOM.btnCancelPathModal.addEventListener('click', closePathModal);
+    if (DOM.btnConfirmPathModal) DOM.btnConfirmPathModal.addEventListener('click', confirmPathModal);
+    if (DOM.inputFolderPath) {
+        DOM.inputFolderPath.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') confirmPathModal();
+            else if (e.key === 'Escape') closePathModal();
+        });
+    }
+
+    // 사진 추출 버튼
+    if (DOM.btnPlayerCapture) {
+        DOM.btnPlayerCapture.addEventListener('click', extractScenePhoto);
+    }
+    if (DOM.btnTimelineCapture) {
+        DOM.btnTimelineCapture.addEventListener('click', extractScenePhoto);
+    }
+    if (DOM.btnToastOpenFolder) {
+        DOM.btnToastOpenFolder.addEventListener('click', openExtractedPhotoFolder);
+    }
+    if (DOM.btnToastClose) {
+        DOM.btnToastClose.addEventListener('click', hidePhotoExtractToast);
+    }
+
+    // 키보드 단축키 'C' (Capture) 또는 'P' (Photo)
+    document.addEventListener('keydown', (e) => {
+        const tag = document.activeElement ? document.activeElement.tagName.toLowerCase() : '';
+        if (tag === 'input' || tag === 'textarea' || tag === 'select') return;
+        if (e.key === 'c' || e.key === 'C' || e.key === 'p' || e.key === 'P') {
+            if (!e.ctrlKey && !e.altKey && !e.metaKey) {
+                e.preventDefault();
+                extractScenePhoto();
+            }
+        }
+    });
+
     loadReels();
 }
+
 
 // 타임라인에 에셋 클립 추가
 function addAssetToTimeline(assetId, trackType, timelineStart) {
@@ -2100,8 +2521,9 @@ function drawVideoClip(clip, time, x, y, w, h) {
     if (!STATE.isPlaying && !STATE.isRendering) {
         if (player.readyState >= 1) {
             try {
-                if (Math.abs(player.currentTime - sourcePlayTime) > 0.05) {
-                    player.currentTime = sourcePlayTime;
+                const targetTime = sourcePlayTime === 0 ? 0.001 : sourcePlayTime;
+                if (Math.abs(player.currentTime - targetTime) > 0.03) {
+                    player.currentTime = targetTime;
                 }
             } catch (e) {}
         }

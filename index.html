@@ -80,17 +80,50 @@
                 <div class="panel-body">
                     <!-- BGM/스티커 파일 추가용 숨김 input (영상은 릴스 폴더 선택으로 로드) -->
                     <input type="file" id="input-media" multiple accept="audio/*,image/png,image/jpeg" style="display:none;">
+                    <!-- 외부 비디오 파일 브라우저 fallback 선택용 숨김 input -->
+                    <input type="file" id="input-external-video-files" multiple accept="video/mp4,video/quicktime,video/webm,video/x-msvideo,video/x-matroska,video/*" style="display:none;">
 
-                    <!-- 릴스 불러오기 (룩북 스튜디오 생성 영상) -->
+                    <!-- 릴스 불러오기 (룩북 스튜디오 및 외부 영상 로드) -->
                     <div class="reels-import-section">
                         <div class="reels-header">
-                            <h3><i class="fa-solid fa-clapperboard"></i> 릴스 불러오기</h3>
-                            <button id="btn-refresh-reels" class="btn btn-sm btn-outline" title="릴스 목록 새로고침"><i class="fa-solid fa-rotate"></i></button>
+                            <h3><i class="fa-solid fa-clapperboard"></i> 릴스 / 영상</h3>
+                            <div class="reels-header-actions">
+                                <button id="btn-open-external-video" class="btn btn-xs btn-primary" title="PC의 외부 동영상 파일/폴더 불러오기">
+                                    <i class="fa-solid fa-folder-plus"></i> 외부 영상
+                                </button>
+                                <button id="btn-refresh-reels" class="btn btn-xs btn-outline" title="목록 새로고침"><i class="fa-solid fa-rotate"></i></button>
+                            </div>
                         </div>
+
+                        <!-- 외부 영상 불러오기 드롭다운 메뉴 -->
+                        <div id="external-video-menu" class="external-video-menu hide">
+                            <button type="button" id="btn-ext-select-files" class="ext-menu-item">
+                                <i class="fa-solid fa-file-video"></i>
+                                <div class="ext-menu-text">
+                                    <div class="ext-menu-title">동영상 파일 선택 (다중)</div>
+                                    <div class="ext-menu-desc">탐색기에서 원하는 동영상 파일들을 직접 선택</div>
+                                </div>
+                            </button>
+                            <button type="button" id="btn-ext-select-folder" class="ext-menu-item">
+                                <i class="fa-solid fa-folder-tree"></i>
+                                <div class="ext-menu-text">
+                                    <div class="ext-menu-title">동영상 폴더 선택 (전체)</div>
+                                    <div class="ext-menu-desc">특정 폴더 내 모든 동영상을 한 번에 스캔</div>
+                                </div>
+                            </button>
+                            <button type="button" id="btn-ext-input-path" class="ext-menu-item">
+                                <i class="fa-solid fa-keyboard"></i>
+                                <div class="ext-menu-text">
+                                    <div class="ext-menu-title">폴더 경로 직접 입력...</div>
+                                    <div class="ext-menu-desc">PC 폴더 경로를 텍스트로 붙여넣어 로드</div>
+                                </div>
+                            </button>
+                        </div>
+
                         <div class="reels-folder-row">
                             <i class="fa-solid fa-folder-open"></i>
-                            <select id="reels-folder-select" class="reels-folder-select" title="의류 폴더 선택">
-                                <option value="">전체 릴스</option>
+                            <select id="reels-folder-select" class="reels-folder-select" title="의류 및 외부 폴더 선택">
+                                <option value="">전체 릴스 / 영상</option>
                             </select>
                         </div>
                         <div id="reels-grid" class="reels-grid">
@@ -159,6 +192,8 @@
                     </div>
                     <div class="preview-canvas-wrapper" id="preview-canvas-wrapper">
                         <canvas id="preview-canvas" width="1920" height="1080"></canvas>
+                        <!-- 셔터 플래시 이펙트 -->
+                        <div id="shutter-flash" class="shutter-flash hide"></div>
                         <!-- 로딩/인디케이터 오버레이 -->
                         <div id="preview-overlay" class="preview-overlay hide">
                             <div class="spinner"></div>
@@ -173,6 +208,12 @@
                             <button id="btn-player-play" class="btn-icon btn-play-main" title="재생/일시정지 (Space)"><i class="fa-solid fa-play"></i></button>
                             <button id="btn-player-stop" class="btn-icon" title="처음으로"><i class="fa-solid fa-stop"></i></button>
                             <button id="btn-player-next-frame" class="btn-icon" title="다음 프레임 (0.05초 앞으로)"><i class="fa-solid fa-step-forward"></i></button>
+                        </div>
+                        <div class="capture-control">
+                            <button id="btn-player-capture" class="btn-icon btn-capture-main" title="현재 장면 사진 추출 (단축키: C)">
+                                <i class="fa-solid fa-camera"></i>
+                                <span class="capture-btn-text">사진 추출</span>
+                            </button>
                         </div>
                         <div class="audio-control">
                             <i id="btn-preview-mute" class="fa-solid fa-volume-high mute-icon"></i>
@@ -445,6 +486,9 @@
                     <button id="btn-add-text-clip" class="btn btn-sm btn-primary" title="타임라인 재생헤드 현재 위치에 새 자막(텍스트) 클립을 추가합니다.">
                         <i class="fa-solid fa-plus-circle"></i> 자막 추가
                     </button>
+                    <button id="btn-timeline-capture" class="btn btn-sm btn-success" title="타임라인 재생헤드 위치의 장면을 사진으로 추출하여 저장합니다. (C)">
+                        <i class="fa-solid fa-camera"></i> 장면 사진 추출
+                    </button>
                     <button id="btn-timeline-clear" class="btn btn-sm btn-outline-danger" title="타임라인의 모든 클립을 삭제합니다.">
                         <i class="fa-solid fa-trash-can"></i> 전체 비우기
                     </button>
@@ -691,8 +735,52 @@
         </div>
     </div>
 
+    <!-- 외부 폴더 경로 직접 입력 모달 -->
+    <div id="path-input-modal" class="modal-backdrop hide">
+        <div class="modal-card modal-sm">
+            <div class="modal-header">
+                <h3><i class="fa-solid fa-folder-open"></i> 외부 폴더 경로 직접 입력</h3>
+                <button class="modal-close" id="btn-close-path-modal">✕</button>
+            </div>
+            <div class="modal-body" style="padding: 20px;">
+                <p style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 12px; line-height: 1.4;">
+                    동영상 파일들이 있는 PC 폴더의 전체 경로를 입력하세요.<br>
+                    (예: <code style="color:var(--accent);">D:\LOOKLOOKLOOK\참고동영상\실외룩북</code>)
+                </p>
+                <div class="property-group" style="margin-bottom: 14px;">
+                    <input type="text" id="input-folder-path" class="text-input" placeholder="폴더 전체 경로 붙여넣기 (Ctrl+V)" style="width: 100%; padding: 10px 12px; font-size: 0.9rem;">
+                </div>
+                <div id="recent-folders-quick-list">
+                    <div style="font-size: 0.8rem; color: var(--text-muted); margin-bottom: 6px;"><i class="fa-solid fa-clock-rotate-left"></i> 최근 / 추천 폴더 빠른 선택:</div>
+                    <div id="recent-folders-chips" style="display: flex; flex-direction: column; gap: 6px; max-height: 150px; overflow-y: auto;"></div>
+                </div>
+            </div>
+            <div class="modal-footer" style="padding: 12px 20px;">
+                <button id="btn-cancel-path-modal" class="btn btn-secondary">취소</button>
+                <button id="btn-confirm-path-modal" class="btn btn-primary"><i class="fa-solid fa-check"></i> 폴더 스캔 및 로드</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 사진 추출 완료 토스트 알림 -->
+    <div id="photo-extract-toast" class="photo-extract-toast hide">
+        <div class="toast-thumb-wrap">
+            <img id="toast-photo-img" src="" alt="추출 사진">
+        </div>
+        <div class="toast-info">
+            <div class="toast-title"><i class="fa-solid fa-circle-check"></i> 장면 사진 추출 완료!</div>
+            <div class="toast-filename" id="toast-photo-filename">scene_00m00s00.png</div>
+            <div class="toast-folder" id="toast-photo-folder">...\추출사진</div>
+        </div>
+        <div class="toast-actions">
+            <button id="btn-toast-open-folder" class="btn btn-xs btn-primary"><i class="fa-solid fa-folder-open"></i> 폴더 열기</button>
+            <button id="btn-toast-close" class="btn btn-xs btn-outline" title="닫기"><i class="fa-solid fa-xmark"></i></button>
+        </div>
+    </div>
+
     <!-- 로직 스크립트 불러오기 -->
-    <script src="ffmpeg-generator.js?v=2.1.0"></script>
-    <script src="app.js?v=2.1.0"></script>
+    <script src="ffmpeg-generator.js?v=2.2.0"></script>
+    <script src="app.js?v=2.2.0"></script>
 </body>
 </html>
+

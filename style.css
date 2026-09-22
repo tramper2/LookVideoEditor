@@ -1820,3 +1820,233 @@ body.resizing-row {
     color: var(--warning);
     font-weight: 600;
 }
+
+/* ========================================================================
+   외부 영상 불러오기 & 타임라인 사진 추출 스타일
+   ======================================================================== */
+
+/* 릴스 헤더 액션 */
+.reels-header-actions {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.reels-import-section {
+    position: relative;
+}
+
+/* 외부 영상 드롭다운 메뉴 */
+.external-video-menu {
+    position: absolute;
+    top: 36px;
+    right: 0;
+    width: 260px;
+    background: #1c1c24;
+    border: 1px solid var(--border-color-hover);
+    border-radius: 8px;
+    box-shadow: 0 10px 25px rgba(0, 0, 0, 0.5);
+    z-index: 100;
+    padding: 6px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    backdrop-filter: blur(12px);
+    animation: fadeInDown 0.18s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.ext-menu-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 10px;
+    background: transparent;
+    border: none;
+    border-radius: 6px;
+    color: var(--text-main);
+    cursor: pointer;
+    text-align: left;
+    transition: background 0.15s ease, transform 0.1s ease;
+    width: 100%;
+}
+
+.ext-menu-item:hover {
+    background: rgba(255, 65, 108, 0.15);
+    color: #fff;
+}
+
+.ext-menu-item i {
+    font-size: 16px;
+    color: var(--primary);
+    width: 20px;
+    text-align: center;
+}
+
+.ext-menu-text {
+    flex: 1;
+}
+
+.ext-menu-title {
+    font-size: 12px;
+    font-weight: 600;
+}
+
+.ext-menu-desc {
+    font-size: 10px;
+    color: var(--text-muted);
+    margin-top: 1px;
+}
+
+/* 사진 추출 버튼 (플레이어 컨트롤러) */
+.capture-control {
+    display: flex;
+    align-items: center;
+    margin-left: 8px;
+    margin-right: 8px;
+}
+
+.btn-capture-main {
+    background: linear-gradient(135deg, rgba(0, 230, 118, 0.2) 0%, rgba(0, 229, 255, 0.2) 100%);
+    border: 1px solid rgba(0, 230, 118, 0.5);
+    color: #00e676;
+    height: 32px;
+    padding: 0 12px;
+    border-radius: 6px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    cursor: pointer;
+    font-size: 12px;
+    font-weight: 600;
+    transition: all 0.2s ease;
+}
+
+.btn-capture-main:hover {
+    background: linear-gradient(135deg, #00e676 0%, #00e5ff 100%);
+    color: #0c0c0e;
+    box-shadow: 0 0 12px rgba(0, 230, 118, 0.4);
+    transform: scale(1.03);
+}
+
+.btn-capture-main:active {
+    transform: scale(0.97);
+}
+
+.capture-btn-text {
+    font-size: 11.5px;
+    letter-spacing: -0.2px;
+}
+
+/* 셔터 플래시 이펙트 */
+.shutter-flash {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: #ffffff;
+    pointer-events: none;
+    z-index: 50;
+    opacity: 0;
+}
+
+.shutter-flash.animate {
+    animation: shutter-flash-anim 0.35s ease-out forwards;
+}
+
+@keyframes shutter-flash-anim {
+    0% { opacity: 0.9; }
+    50% { opacity: 0.5; }
+    100% { opacity: 0; }
+}
+
+/* 사진 추출 완료 토스트 알림 */
+.photo-extract-toast {
+    position: fixed;
+    bottom: 30px;
+    right: 30px;
+    background: rgba(22, 22, 28, 0.95);
+    border: 1px solid rgba(0, 230, 118, 0.4);
+    box-shadow: 0 12px 36px rgba(0, 0, 0, 0.6), 0 0 15px rgba(0, 230, 118, 0.2);
+    border-radius: 12px;
+    padding: 12px 16px;
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    z-index: 1000;
+    backdrop-filter: blur(16px);
+    max-width: 480px;
+    transition: opacity 0.25s ease, transform 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+    transform: translateY(20px);
+    opacity: 0;
+    pointer-events: auto;
+}
+
+.photo-extract-toast.show {
+    transform: translateY(0);
+    opacity: 1;
+}
+
+.toast-thumb-wrap {
+    width: 60px;
+    height: 60px;
+    border-radius: 6px;
+    overflow: hidden;
+    background: #000;
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.toast-thumb-wrap img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+}
+
+.toast-info {
+    flex: 1;
+    min-width: 0;
+}
+
+.toast-title {
+    color: #00e676;
+    font-size: 13px;
+    font-weight: 700;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-bottom: 3px;
+}
+
+.toast-filename {
+    color: var(--text-main);
+    font-size: 12px;
+    font-weight: 600;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.toast-folder {
+    color: var(--text-muted);
+    font-size: 10.5px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    margin-top: 2px;
+}
+
+.toast-actions {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-shrink: 0;
+}
+
+/* 소형 모달 */
+.modal-sm {
+    max-width: 440px !important;
+}
