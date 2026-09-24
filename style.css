@@ -1626,17 +1626,84 @@ body.resizing-row {
     transform: translateX(-50%);
     padding: 1px 7px;
     border-radius: 9px;
-    background: rgba(0, 0, 0, 0.62);
+    background: rgba(0, 0, 0, 0.75);
     color: var(--accent);
     font-size: 10px;
     font-weight: 600;
     white-space: nowrap;
-    pointer-events: none;
+    pointer-events: auto;
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    user-select: none;
+    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.4);
+}
+
+.webp-range-close-btn {
+    cursor: pointer;
+    font-size: 13px;
+    line-height: 1;
+    color: var(--text-muted);
+    transition: color 0.15s ease, transform 0.15s ease;
+    padding: 0 2px;
+    display: inline-block;
+}
+
+.webp-range-close-btn:hover {
+    color: #ffffff;
+    transform: scale(1.2);
 }
 
 /* 구간이 너무 좁아 라벨이 핸들과 겹칠 때는 숨긴다 */
 .webp-range-band.too-narrow .webp-range-label {
     display: none;
+}
+
+/* WebP 편집 모드 활성화 버튼 스타일 */
+.btn-webp-active {
+    background: rgba(0, 229, 255, 0.18) !important;
+    border-color: var(--accent) !important;
+    color: var(--accent) !important;
+    box-shadow: 0 0 12px rgba(0, 229, 255, 0.35) !important;
+    font-weight: 600 !important;
+}
+
+.btn-webp-active:hover {
+    background: rgba(0, 229, 255, 0.28) !important;
+    box-shadow: 0 0 18px rgba(0, 229, 255, 0.55) !important;
+}
+
+/* 타임라인 툴바 내 WebP 구간 상태 배지 */
+.webp-timeline-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 3px 10px;
+    border-radius: 6px;
+    background: rgba(0, 229, 255, 0.1);
+    border: 1px solid rgba(0, 229, 255, 0.35);
+    color: var(--accent);
+    font-size: 0.75rem;
+    font-weight: 500;
+    margin-left: 2px;
+}
+
+.webp-timeline-badge strong {
+    font-family: monospace;
+    font-size: 0.8rem;
+    color: #ffffff;
+}
+
+.webp-timeline-badge .btn-xs {
+    padding: 2px 8px;
+    font-size: 0.72rem;
+    height: 22px;
+    line-height: 1;
+    border-radius: 4px;
+}
+
+.webp-timeline-badge.hide {
+    display: none !important;
 }
 
 /* --- 설정 모달 --- */

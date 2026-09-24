@@ -28,6 +28,7 @@ const STATE = {
     webpRange: { start: 0, duration: 5 },  // 내보낼 타임라인 구간 (초). 최대 WEBP_MAX_DURATION
     webpTargetMB: 3,                       // 결과물이 넘지 않아야 할 최대 용량 (MB)
     webpFps: 20,                           // WebP 프레임 레이트
+    isWebpEditMode: false,                 // 타임라인 WebP 구간 편집 모드 활성화 여부
 
     playerLastSeekTimes: {}, // 플레이어별 마지막 Seek 타임스탬프 (ms, 싱크 지터 방지)
 
@@ -173,8 +174,15 @@ const DOM = {
     webpConfirmFloor: document.getElementById('webp-confirm-floor'),
     webpConfirmCancel: document.getElementById('webp-confirm-cancel'),
 
-    // WebP 내보내기 설정 모달
+    // WebP 내보내기 설정 모달 및 편집 제어
     btnExportWebp: document.getElementById('btn-export-webp'),
+    btnToggleWebpHeader: document.getElementById('btn-toggle-webp-header'),
+    btnToggleWebpMode: document.getElementById('btn-toggle-webp-mode'),
+    btnWebpModalEditRange: document.getElementById('btn-webp-modal-edit-range'),
+    webpTimelineBadge: document.getElementById('webp-timeline-badge'),
+    webpTimelineRangeText: document.getElementById('webp-timeline-range-text'),
+    btnWebpQuickExport: document.getElementById('btn-webp-quick-export'),
+    btnWebpQuickClose: document.getElementById('btn-webp-quick-close'),
     webpModal: document.getElementById('webp-modal'),
     webpModalCloseBtn: document.getElementById('webp-modal-close-btn'),
     webpModalCancel: document.getElementById('webp-modal-cancel'),
@@ -188,6 +196,8 @@ const DOM = {
     // 타임라인 WebP 구간 밴드
     webpRangeBand: document.getElementById('webp-range-band'),
     webpRangeLabel: document.getElementById('webp-range-label'),
+    webpRangeLabelText: document.getElementById('webp-range-label-text'),
+    webpRangeCloseBtn: document.getElementById('webp-range-close-btn'),
 
     // 외부 영상 불러오기 관련 요소
     btnOpenExternalVideo: document.getElementById('btn-open-external-video'),
@@ -332,6 +342,24 @@ function setupEventListeners() {
     if (DOM.webpConfirmFloor) DOM.webpConfirmFloor.addEventListener('click', () => confirmWebpDownscale(false));
     if (DOM.webpConfirmCancel) DOM.webpConfirmCancel.addEventListener('click', cancelRendering);
 
+    // WebP 편집 모드 토글 이벤트
+    if (DOM.btnToggleWebpMode) DOM.btnToggleWebpMode.addEventListener('click', () => toggleWebpEditMode());
+    if (DOM.btnToggleWebpHeader) DOM.btnToggleWebpHeader.addEventListener('click', () => toggleWebpEditMode());
+    if (DOM.btnWebpQuickClose) DOM.btnWebpQuickClose.addEventListener('click', () => toggleWebpEditMode(false));
+    if (DOM.btnWebpQuickExport) DOM.btnWebpQuickExport.addEventListener('click', openWebpModal);
+    if (DOM.btnWebpModalEditRange) {
+        DOM.btnWebpModalEditRange.addEventListener('click', () => {
+            closeWebpModal();
+            toggleWebpEditMode(true);
+        });
+    }
+    if (DOM.webpRangeCloseBtn) {
+        DOM.webpRangeCloseBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            toggleWebpEditMode(false);
+        });
+    }
+
     // 타임라인 WebP 구간 밴드 드래그
     if (DOM.webpRangeBand) {
         DOM.webpRangeBand.querySelector('.webp-range-handle-left')
@@ -339,8 +367,8 @@ function setupEventListeners() {
         DOM.webpRangeBand.querySelector('.webp-range-handle-right')
             ?.addEventListener('mousedown', (e) => initWebpBandDrag(e, 'right'));
         DOM.webpRangeBand.addEventListener('mousedown', (e) => {
-            // 핸들이 아닌 몸통을 잡으면 구간 전체 이동
-            if (e.target.classList.contains('webp-range-handle')) return;
+            // 핸들이나 닫기 버튼이 아닌 몸통을 잡으면 구간 전체 이동
+            if (e.target.classList.contains('webp-range-handle') || e.target.closest('#webp-range-close-btn')) return;
             initWebpBandDrag(e, 'move');
         });
     }
@@ -1944,17 +1972,77 @@ function setWebpRange(start, duration) {
     updateWebpBand();
 }
 
+function toggleWebpEditMode(forceState) {
+    if (STATE.clips.length === 0) {
+        alert("타임라인에 최소 하나 이상의 클립이 있어야 WebP 구간을 편집할 수 있습니다.");
+        return;
+    }
+    const targetState = (forceState !== undefined) ? !!forceState : !STATE.isWebpEditMode;
+    STATE.isWebpEditMode = targetState;
+    updateWebpEditModeUI();
+    updateWebpBand();
+
+    // 편집 모드가 켜지면 해당 구간이 화면에 보이도록 스크롤 이동
+    if (STATE.isWebpEditMode && DOM.timelineScrollContainer) {
+        const range = clampWebpRange();
+        const startPx = range.start * STATE.timelineZoom;
+        const scrollLeft = DOM.timelineScrollContainer.scrollLeft;
+        const clientWidth = DOM.timelineScrollContainer.clientWidth - 160;
+        if (startPx < scrollLeft || startPx > scrollLeft + clientWidth - 60) {
+            DOM.timelineScrollContainer.scrollTo({
+                left: Math.max(0, startPx - 40),
+                behavior: 'smooth'
+            });
+        }
+    }
+}
+
+function updateWebpEditModeUI() {
+    const isEdit = !!STATE.isWebpEditMode;
+
+    if (DOM.btnToggleWebpMode) {
+        DOM.btnToggleWebpMode.classList.toggle('btn-webp-active', isEdit);
+        DOM.btnToggleWebpMode.title = isEdit ? "WebP 구간 편집 모드 끄기" : "타임라인에 WebP 시간 구간 선택 컨트롤러 표시";
+        DOM.btnToggleWebpMode.innerHTML = isEdit 
+            ? '<i class="fa-solid fa-check"></i> WebP 편집 중'
+            : '<i class="fa-solid fa-photo-film"></i> WebP 편집';
+    }
+
+    if (DOM.btnToggleWebpHeader) {
+        DOM.btnToggleWebpHeader.classList.toggle('btn-webp-active', isEdit);
+        DOM.btnToggleWebpHeader.title = isEdit ? "WebP 구간 편집 모드 끄기" : "타임라인에 WebP 시간 구간 선택 컨트롤러 표시";
+        DOM.btnToggleWebpHeader.innerHTML = isEdit
+            ? '<i class="fa-solid fa-check"></i> WebP 편집 중'
+            : '<i class="fa-solid fa-sliders"></i> WebP 편집';
+    }
+
+    if (DOM.webpTimelineBadge) {
+        DOM.webpTimelineBadge.classList.toggle('hide', !isEdit);
+    }
+}
+
 // 밴드 위치/폭/라벨을 현재 구간에 맞춰 갱신한다.
 function updateWebpBand() {
     const band = DOM.webpRangeBand;
     if (!band) return;
 
-    // 클립이 없으면 내보낼 구간 자체가 없다
+    // 클립이 없으면 내보낼 구간 자체가 없으므로 모드도 해제하고 숨김
     if (STATE.clips.length === 0) {
+        STATE.isWebpEditMode = false;
+        updateWebpEditModeUI();
         band.classList.add('hide');
         return;
     }
+
+    // WebP 편집 모드가 아니면 숨김
+    if (!STATE.isWebpEditMode) {
+        band.classList.add('hide');
+        if (DOM.webpTimelineBadge) DOM.webpTimelineBadge.classList.add('hide');
+        return;
+    }
+
     band.classList.remove('hide');
+    if (DOM.webpTimelineBadge) DOM.webpTimelineBadge.classList.remove('hide');
 
     const range = clampWebpRange();
     const zoom = STATE.timelineZoom;
@@ -1964,8 +2052,15 @@ function updateWebpBand() {
     band.style.width = `${widthPx}px`;
     band.classList.toggle('too-narrow', widthPx < 76);
 
-    if (DOM.webpRangeLabel) {
-        DOM.webpRangeLabel.textContent = `WebP ${range.duration.toFixed(1)}초`;
+    const labelText = `WebP ${range.duration.toFixed(1)}초`;
+    if (DOM.webpRangeLabelText) {
+        DOM.webpRangeLabelText.textContent = labelText;
+    } else if (DOM.webpRangeLabel) {
+        DOM.webpRangeLabel.textContent = labelText;
+    }
+
+    if (DOM.webpTimelineRangeText) {
+        DOM.webpTimelineRangeText.textContent = `${range.start.toFixed(1)}초 ~ ${(range.start + range.duration).toFixed(1)}초 (${range.duration.toFixed(1)}초)`;
     }
 
     if (DOM.webpModal && DOM.webpModal.classList.contains('show')) {
@@ -3617,6 +3712,8 @@ function confirmNewProject() {
         STATE.webpRange = { start: 0, duration: WEBP_MAX_DURATION };
         STATE.webpTargetMB = 3;
         STATE.webpFps = 20;
+        STATE.isWebpEditMode = false;
+        updateWebpEditModeUI();
 
         updatePreviewResolution();
         selectClip(null);
@@ -3704,6 +3801,8 @@ function loadProjectFile(e) {
             STATE.webpTargetMB = Number.isFinite(data.webpTargetMB)
                 ? Math.min(7, Math.max(2, data.webpTargetMB)) : 3;
             STATE.webpFps = Number.isFinite(data.webpFps) ? data.webpFps : 20;
+            STATE.isWebpEditMode = false;
+            updateWebpEditModeUI();
 
             if (DOM.projectResolution) {
                 DOM.projectResolution.value = `${STATE.outputWidth}x${STATE.outputHeight}`;

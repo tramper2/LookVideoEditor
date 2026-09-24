@@ -59,7 +59,10 @@
                 <button id="btn-save-project" class="btn btn-secondary" title="현재 편집 상태를 JSON 파일로 다운로드합니다.">
                     <i class="fa-solid fa-floppy-disk"></i> 프로젝트 저장
                 </button>
-                <!-- 애니메이션 WebP 내보내기 (목표 용량 보장) -->
+                <!-- 애니메이션 WebP 내보내기 및 구간 편집 -->
+                <button id="btn-toggle-webp-header" class="btn btn-secondary" title="타임라인에 WebP 시간 구간 선택 컨트롤러를 표시하거나 숨깁니다.">
+                    <i class="fa-solid fa-sliders"></i> WebP 편집
+                </button>
                 <button id="btn-export-webp" class="btn btn-secondary" title="타임라인에서 지정한 구간(최대 5초)을 목표 용량에 맞춘 애니메이션 WebP로 저장합니다.">
                     <i class="fa-solid fa-image"></i> WebP 내보내기
                 </button>
@@ -489,6 +492,14 @@
                     <button id="btn-timeline-capture" class="btn btn-sm btn-success" title="타임라인 재생헤드 위치의 장면을 사진으로 추출하여 저장합니다. (C)">
                         <i class="fa-solid fa-camera"></i> 장면 사진 추출
                     </button>
+                    <button id="btn-toggle-webp-mode" class="btn btn-sm btn-secondary" title="타임라인에 WebP 시간 구간 선택 컨트롤러를 표시하거나 숨깁니다.">
+                        <i class="fa-solid fa-photo-film"></i> WebP 편집
+                    </button>
+                    <div id="webp-timeline-badge" class="webp-timeline-badge hide">
+                        <span>WebP 구간: <strong id="webp-timeline-range-text">0.0초 ~ 5.0초 (5.0초)</strong></span>
+                        <button id="btn-webp-quick-export" class="btn btn-xs btn-primary" title="이 구간으로 WebP 내보내기"><i class="fa-solid fa-download"></i> 내보내기</button>
+                        <button id="btn-webp-quick-close" class="btn btn-xs btn-outline" title="WebP 편집 닫기"><i class="fa-solid fa-xmark"></i></button>
+                    </div>
                     <button id="btn-timeline-clear" class="btn btn-sm btn-outline-danger" title="타임라인의 모든 클립을 삭제합니다.">
                         <i class="fa-solid fa-trash-can"></i> 전체 비우기
                     </button>
@@ -521,7 +532,10 @@
                     <!-- WebP 내보내기 구간 밴드 (최대 5초, 드래그로 조정) -->
                     <div id="webp-range-band" class="webp-range-band hide">
                         <div class="webp-range-handle webp-range-handle-left" title="구간 시작 조정"></div>
-                        <div class="webp-range-label" id="webp-range-label">WebP 5.0초</div>
+                        <div class="webp-range-label" id="webp-range-label">
+                            <span id="webp-range-label-text">WebP 5.0초</span>
+                            <span class="webp-range-close-btn" id="webp-range-close-btn" title="WebP 편집 닫기">&times;</span>
+                        </div>
                         <div class="webp-range-handle webp-range-handle-right" title="구간 끝 조정"></div>
                     </div>
 
@@ -596,6 +610,11 @@
                     <div class="webp-range-readout">
                         <span id="webp-range-readout">0.0초 ~ 5.0초</span>
                         <span id="webp-range-duration" class="webp-duration-badge">5.0초</span>
+                    </div>
+                    <div style="margin-top: 8px;">
+                        <button type="button" id="btn-webp-modal-edit-range" class="btn btn-sm btn-secondary" style="width: 100%;">
+                            <i class="fa-solid fa-sliders"></i> 타임라인에서 구간 편집하기
+                        </button>
                     </div>
                 </div>
 
