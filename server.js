@@ -137,6 +137,8 @@ let activeProcesses = [];
 
 // 해상도 하향 확인을 기다리는 WebP 요청 (사용자가 응답하면 이어서 진행한다)
 let pendingWebp = null;
+// GIF 단계만 확인 대기 중일 때의 재개 정보 (webP 는 이미 저장 완료)
+let pendingGif = null;
 
 function registerProcess(child) {
     activeProcesses.push(child);
@@ -202,9 +204,72 @@ function formatElapsed(ms) {
 /* ------------------------------------------------------------------ */
 
 // 단계별 진행률 가중치 (중간본 합성은 짧고, 탐색과 확정 인코딩이 대부분을 차지한다)
-const WEBP_PHASE_WEIGHT = { intermediate: 5, search: 60, final: 35 };
+// GIF 동시 저장이 켜지면 webP 이후에 GIF 단계가 이어지므로 구간을 나눠 쓴다.
+const WEBP_PHASE_WEIGHT = { intermediate: 5, search: 55, final: 25, gif: 15 };
+
+/** GIF 단계 진행 상황을 renderState.gif 에 반영 */
+function updateGifProgress(info) {
+    if (!renderState.gif) renderState.gif = {};
+    const g = renderState.gif;
+    g.phase = info.phase;
+    if (info.fps !== undefined) g.fps = info.fps;
+    if (info.colors !== undefined) g.colors = info.colors;
+    if (info.width !== undefined) g.width = info.width;
+    if (info.height !== undefined) g.height = info.height;
+    if (info.step !== undefined) g.step = info.step;
+    if (info.totalSteps !== undefined) g.totalSteps = info.totalSteps;
+    if (info.attempt !== undefined) g.attempt = info.attempt;
+    if (info.sizeBytes !== undefined) g.sizeBytes = info.sizeBytes;
+    if (info.suggestion !== undefined) g.suggestion = info.suggestion;
+    if (info.floorSizeBytes !== undefined) g.floorSizeBytes = info.floorSizeBytes;
+
+    // GIF 단계는 webP 완료(80%) 이후 나머지 구간을 나눠 쓴다
+    const gifWeight = WEBP_PHASE_WEIGHT.gif;
+    const gifStart = WEBP_PHASE_WEIGHT.intermediate + WEBP_PHASE_WEIGHT.search + WEBP_PHASE_WEIGHT.final;
+    const total = info.totalSteps || 10;
+    let percent = gifStart;
+    if (info.phase === 'gif_try' || info.phase === 'gif_try_size') {
+        const done = Math.min(info.step || 1, total) / total;
+        percent = gifStart + done * (gifWeight - 2);
+    } else if (info.phase === 'gif_needs_confirm') {
+        percent = 100;
+    }
+    renderState.progress = Math.max(renderState.progress || 0, Math.min(99, percent));
+}
+
+/** GIF 단계 완료를 renderState 에 반영하고 전체 작업을 완료 처리 */
+function finishGif(gif) {
+    renderState.gif = Object.assign(renderState.gif || {}, {
+        phase: 'completed',
+        fps: gif.fps,
+        width: gif.width,
+        height: gif.height,
+        colors: gif.colors,
+        duration: gif.duration || 0,
+        sizeBytes: gif.sizeBytes,
+        targetBytes: gif.targetBytes,
+        exceededTarget: gif.exceededTarget,
+        probes: gif.probes,
+        attempts: gif.attempts
+    });
+
+    // 다운로드·미리보기용 경로 (프로젝트 루트 기준 상대경로 우선)
+    const resolved = path.resolve(gif.outputPath);
+    const rel = path.relative(ROOT_DIR, resolved);
+    renderState.gifFile = (rel && !rel.startsWith('..') && !path.isAbsolute(rel)) ? rel : resolved;
+
+    renderState.status = 'completed';
+    renderState.progress = 100;
+    console.log(`[LookVideoEditor] GIF 완료: ${gif.width}x${gif.height} ${gif.fps}fps ${gif.colors}색 ` +
+        `${(gif.sizeBytes / 1048576).toFixed(2)}MB${gif.exceededTarget ? ' (목표 초과)' : ''}`);
+}
 
 function updateWebpProgress(info) {
+    // GIF 단계 이벤트는 별도 처리
+    if (typeof info.phase === 'string' && info.phase.startsWith('gif_')) {
+        updateGifProgress(info);
+        return;
+    }
     if (!renderState.webp) renderState.webp = {};
     const w = renderState.webp;
     w.phase = info.phase;
@@ -224,7 +289,7 @@ function updateWebpProgress(info) {
     else if (info.phase === 'search') {
         const done = Math.min(info.probes || 0, 12) / 12;
         percent = WEBP_PHASE_WEIGHT.intermediate + done * WEBP_PHASE_WEIGHT.search;
-    } else if (info.phase === 'final') percent = 95;
+    } else if (info.phase === 'final') percent = 80;
     else if (info.phase === 'needs_confirm') percent = 100;
 
     renderState.progress = Math.max(renderState.progress || 0, Math.min(99, percent));
@@ -239,8 +304,19 @@ function startWebpExport(params) {
         rawInputs, filterComplex, mappedVideo, mappedAudio,
         rangeStart, rangeDuration, fps,
         targetBytes, outputWidth, outputHeight, outputFile,
-        mode = 'initial', reuseToken = null, forcedWidth = null, forcedHeight = null
+        mode = 'initial', reuseToken = null, forcedWidth = null, forcedHeight = null,
+        // GIF 동시 저장: { gifEnabled, gifTargetBytes, gifMode, gifOutputFile }
+        gifEnabled = false, gifTargetBytes = 0, gifMode = 'initial', gifOutputFile = null, gifDuration = 0
     } = params;
+
+    // GIF 경로: webP 와 같은 stem, 확장자만 .gif (상세페이지가 stem 으로 두 포맷을 페어링)
+    const gifOutputPath = gifOutputFile
+        ? path.resolve(ROOT_DIR, gifOutputFile)
+        : (outputFile ? path.resolve(ROOT_DIR, String(outputFile).replace(/\.webp$/i, '.gif')) : null);
+
+    // 새 내보내기가 시작되면 이전 확인 대기본은 버린다 (stale 토큰 + 수십 MB 중간본 잔류 방지)
+    pendingWebp = null;
+    pendingGif = null;
 
     renderState = {
         isRendering: true,
@@ -260,10 +336,16 @@ function startWebpExport(params) {
             targetBytes,
             width: forcedWidth || outputWidth,
             height: forcedHeight || outputHeight
-        }
+        },
+        gif: (gifEnabled && gifTargetBytes > 0) ? {
+            phase: 'pending',
+            targetBytes: gifTargetBytes,
+            outputFile: gifOutputFile
+        } : null
     };
 
-    console.log(`[LookVideoEditor] WebP 내보내기 시작 (mode=${mode}, 목표 ${(targetBytes / 1048576).toFixed(1)}MB, ${rangeDuration}초)`);
+    console.log(`[LookVideoEditor] WebP 내보내기 시작 (mode=${mode}, 목표 ${(targetBytes / 1048576).toFixed(1)}MB, ${rangeDuration}초` +
+        `${gifEnabled && gifTargetBytes > 0 ? `, GIF 동시 저장 목표 ${(gifTargetBytes / 1048576).toFixed(1)}MB` : ''})`);
 
     exportWebp({
         ffmpegBin: getFFmpegBinary(),
@@ -282,7 +364,18 @@ function startWebpExport(params) {
         mode,
         reuseToken,
         forcedWidth,
-        forcedHeight
+        forcedHeight,
+        gif: (gifEnabled && gifTargetBytes > 0) ? {
+            enabled: true,
+            targetBytes: gifTargetBytes,
+            outputPath: gifOutputPath,
+            mode: gifMode,
+            // GIF 기준 해상도는 항상 원본 프로젝트 해상도 (webP 가 낮춘 해상도를 물려받지 않도록)
+            maxWidth: outputWidth,
+            maxHeight: outputHeight,
+            sourceFps: fps,
+            duration: gifDuration
+        } : null
     }, {
         registerProcess,
         onProgress: updateWebpProgress
@@ -296,7 +389,69 @@ function startWebpExport(params) {
             cleanupOrphanTemps(WEBP_TEMP_ROOT);
         }
 
+        // GIF 단계만 재개한 경우 — webP 정보는 이미 완료 상태로 보존돼 있다
+        if (result.resumeOf === 'gif') {
+            if (result.status === 'needs_confirm') {
+                renderState.status = 'needs_confirm';
+                renderState.gif = Object.assign(renderState.gif || {}, {
+                    phase: 'needs_confirm',
+                    token: result.gif.token,
+                    floorSizeBytes: result.gif.floorSizeBytes,
+                    targetBytes: result.gif.targetBytes,
+                    width: result.gif.width,
+                    height: result.gif.height,
+                    fps: result.gif.fps,
+                    colors: result.gif.colors,
+                    duration: (pendingGif && pendingGif.duration) || 0
+                });
+                pendingGif = Object.assign({}, pendingGif, {
+                    token: result.gif.token,
+                    targetBytes: gifTargetBytes,
+                    gifOutputPath
+                });
+                console.log(`[LookVideoEditor] GIF 목표 미달 ` +
+                    `(${(result.gif.floorSizeBytes / 1048576).toFixed(2)}MB) — 사용자 판단 대기`);
+                return;
+            }
+            finishGif(result.gif);
+            return;
+        }
+
         if (result.status === 'needs_confirm') {
+            // webP 는 이미 저장됐고 GIF 만 사용자 판단이 필요한 경우
+            if (result.media === 'gif') {
+                renderState.status = 'needs_confirm';
+                renderState.outputFile = result.outputPath || outputFile;
+                if (result.webp) {
+                    renderState.webp = Object.assign(renderState.webp || {}, Object.assign({ phase: 'completed' }, result.webp));
+                }
+                renderState.gif = Object.assign(renderState.gif || {}, {
+                    phase: 'needs_confirm',
+                    token: result.gif.token,
+                    floorSizeBytes: result.gif.floorSizeBytes,
+                    targetBytes: result.gif.targetBytes,
+                    width: result.gif.width,
+                    height: result.gif.height,
+                    fps: result.gif.fps,
+                    colors: result.gif.colors,
+                    duration: gifDuration
+                });
+                pendingGif = {
+                    token: result.gif.token,
+                    targetBytes: gifTargetBytes,
+                    gifOutputPath,
+                    // GIF 기준 해상도는 항상 원본 프로젝트 해상도 (webP 가 낮춘 값을 물려받지 않도록)
+                    outputWidth,
+                    outputHeight,
+                    sourceFps: fps,
+                    duration: gifDuration,
+                    outputFile
+                };
+                console.log(`[LookVideoEditor] webP 완료 · GIF 목표 미달 ` +
+                    `(${(result.gif.floorSizeBytes / 1048576).toFixed(2)}MB > 목표 ${(gifTargetBytes / 1048576).toFixed(1)}MB) — 사용자 판단 대기`);
+                return;
+            }
+
             // 목표를 맞추려면 해상도를 낮춰야 한다 — 사용자 확인 대기
             renderState.status = 'needs_confirm';
             renderState.webp = Object.assign(renderState.webp || {}, {
@@ -335,6 +490,8 @@ function startWebpExport(params) {
         });
         console.log(`[LookVideoEditor] WebP 완료: ${result.width}x${result.height} q=${result.quality} ` +
             `${(result.sizeBytes / 1048576).toFixed(2)}MB (${renderState.elapsedTime})`);
+
+        if (result.gif) finishGif(result.gif);
     })
     .catch((err) => {
         // 취소·실패로 중단된 작업의 임시 폴더를 정리한다 (무손실 중간본이 수십 MB)
@@ -393,6 +550,16 @@ const server = http.createServer(async (req, res) => {
                 renderState.outputUrl = '/' + relToRoot.replace(/\\/g, '/');
             } else {
                 renderState.outputUrl = `/api/reels-file?path=${encodeURIComponent(resolvedOut)}`;
+            }
+        }
+        // GIF 동시 저장 결과도 같은 방식으로 URL 을 계산해 준다
+        if (renderState.gifFile) {
+            const resolvedGif = path.resolve(ROOT_DIR, renderState.gifFile);
+            const relGif = path.relative(ROOT_DIR, resolvedGif);
+            if (relGif && !relGif.startsWith('..') && !path.isAbsolute(relGif)) {
+                renderState.gifUrl = '/' + relGif.replace(/\\/g, '/');
+            } else {
+                renderState.gifUrl = `/api/reels-file?path=${encodeURIComponent(resolvedGif)}`;
             }
         }
         res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -612,6 +779,7 @@ const server = http.createServer(async (req, res) => {
             renderState.status = 'cancelled';
             renderState.isRendering = false;
             pendingWebp = null;
+            pendingGif = null;
             // 확인 대기 중이던 보류본까지 버린다 (사용자가 작업 자체를 중단했으므로)
             cleanupAllPending();
             // 죽인 프로세스가 남긴 임시 폴더 정리 (exportWebp 의 catch 도 시도하지만
@@ -651,7 +819,8 @@ const server = http.createServer(async (req, res) => {
                 rawInputs, filterComplex, mappedVideo, mappedAudio,
                 rangeStart = 0, rangeDuration = 5, fps = 20,
                 targetMB = 3, outputWidth = 1080, outputHeight = 1920,
-                outputFile
+                outputFile,
+                gifEnabled = false, gifTargetMB = 5, gifDuration = 0
             } = data;
 
             if (!rawInputs || !filterComplex || !mappedVideo || !outputFile) {
@@ -681,7 +850,11 @@ const server = http.createServer(async (req, res) => {
                 rangeStart, rangeDuration, fps,
                 targetBytes: Math.round(targetMB * 1024 * 1024),
                 outputWidth, outputHeight, outputFile,
-                mode: 'initial'
+                mode: 'initial',
+                gifEnabled: !!gifEnabled,
+                gifTargetBytes: Math.round(Math.max(0.5, Number(gifTargetMB) || 5) * 1024 * 1024),
+                gifMode: 'initial',
+                gifDuration: Math.max(0, Number(gifDuration) || 0)
             });
 
             res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -710,6 +883,116 @@ const server = http.createServer(async (req, res) => {
                 return;
             }
 
+            const { action, width, height, target } = data;
+
+            // GIF 단계 확인 — webP 는 이미 저장됐고 GIF 만 이어서 진행한다
+            if (target === 'gif') {
+                if (!pendingGif) {
+                    res.writeHead(400, { 'Content-Type': 'application/json' });
+                    res.end(JSON.stringify({ error: 'GIF 확인을 기다리는 작업이 없습니다. 처음부터 다시 시도해 주세요.' }));
+                    return;
+                }
+                const gifBase = pendingGif;
+                pendingGif = null;
+
+                // GIF 는 "가장 낮은 설정으로 저장(floor)" 또는 "GIF 건너뛰기(skip)" 두 갈래만 있다
+                if (action === 'skip') {
+                    // 부분 후보 파일과 중간본을 정리하고 webP 결과만 남긴다
+                    cleanupOrphanTemps(WEBP_TEMP_ROOT);
+                    scheduleTempSweep();
+                    renderState.isRendering = false;
+                    renderState.status = 'completed';
+                    renderState.progress = 100;
+                    renderState.elapsedTime = formatElapsed(Date.now() - renderState.startTime);
+                    renderState.gif = Object.assign(renderState.gif || {}, {
+                        phase: 'skipped',
+                        targetBytes: gifBase.targetBytes
+                    });
+                    console.log('[LookVideoEditor] GIF 건너뜀 — webP 결과만 저장');
+                    res.writeHead(200, { 'Content-Type': 'application/json' });
+                    res.end(JSON.stringify({ status: 'skipped' }));
+                    return;
+                }
+                if (action !== 'floor') {
+                    res.writeHead(400, { 'Content-Type': 'application/json' });
+                    res.end(JSON.stringify({ error: 'GIF 는 floor 또는 skip 만 허용됩니다.' }));
+                    return;
+                }
+
+                const gifTargetBytes = gifBase.targetBytes;
+
+                renderState = Object.assign({}, renderState, {
+                    isRendering: true,
+                    status: 'rendering',
+                    startTime: Date.now(),
+                    error: null,
+                    // 확인창에서 progress 가 100 이었으므로 되돌려 놓는다(단조 증가 가드 때문에 필요)
+                    progress: Math.min(renderState.progress || 0, 80)
+                });
+
+                exportWebp({
+                    ffmpegBin: getFFmpegBinary(),
+                    rawInputs: [],
+                    filterComplex: null,
+                    rangeStart: 0,
+                    rangeDuration: renderState.totalDuration || 0,
+                    fps: Number(renderState.fps) || 20,
+                    targetBytes: 0,
+                    maxWidth: 0,
+                    maxHeight: 0,
+                    outputPath: gifBase.outputFile ? path.resolve(ROOT_DIR, gifBase.outputFile) : '',
+                    tempRoot: WEBP_TEMP_ROOT,
+                    mode: 'gif-resume',
+                    reuseToken: gifBase.token,
+                    gif: {
+                        enabled: true,
+                        targetBytes: gifTargetBytes,
+                        outputPath: gifBase.gifOutputPath,
+                        mode: 'accept-floor',
+                        sourceFps: gifBase.sourceFps,
+                        duration: gifBase.duration || 0,
+                        maxWidth: gifBase.outputWidth,
+                        maxHeight: gifBase.outputHeight
+                    }
+                }, {
+                    registerProcess,
+                    onProgress: updateWebpProgress
+                })
+                .then((result) => {
+                    renderState.isRendering = false;
+                    renderState.elapsedTime = formatElapsed(Date.now() - renderState.startTime);
+                    if (result.status === 'needs_confirm') {
+                        renderState.status = 'needs_confirm';
+                        renderState.gif = Object.assign(renderState.gif || {}, {
+                            phase: 'needs_confirm',
+                            token: result.gif.token,
+                            floorSizeBytes: result.gif.floorSizeBytes,
+                            targetBytes: result.gif.targetBytes,
+                            width: result.gif.width,
+                            height: result.gif.height,
+                            fps: result.gif.fps,
+                            colors: result.gif.colors
+                        });
+                        pendingGif = Object.assign({}, gifBase, { token: result.gif.token });
+                        return;
+                    }
+                    finishGif(result.gif);
+                })
+                .catch((err) => {
+                    cleanupOrphanTemps(WEBP_TEMP_ROOT);
+                    scheduleTempSweep();
+                    if (renderState.status === 'cancelled') return;
+                    renderState.isRendering = false;
+                    renderState.status = 'error';
+                    renderState.error = err.message;
+                    console.error('[LookVideoEditor] GIF 재개 실패:', err.message);
+                });
+
+                res.writeHead(200, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ status: 'started' }));
+                return;
+            }
+
             if (!pendingWebp) {
                 res.writeHead(400, { 'Content-Type': 'application/json' });
                 res.end(JSON.stringify({ error: '확인을 기다리는 작업이 없습니다. 처음부터 다시 시도해 주세요.' }));
@@ -719,7 +1002,6 @@ const server = http.createServer(async (req, res) => {
             const base = pendingWebp;
             pendingWebp = null;
 
-            const { action, width, height } = data;
             if (action === 'floor') {
                 // 하향 거부 — 품질 하한으로 확정하고 초과를 감수
                 startWebpExport(Object.assign({}, base, {

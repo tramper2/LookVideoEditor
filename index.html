@@ -646,10 +646,47 @@
                     </select>
                 </div>
 
+                <!-- GIF 동시 저장 -->
+                <div class="webp-section">
+                    <div class="webp-section-title">
+                        GIF 동시 저장
+                        <span class="webp-hint">29CM · 네이버 · 카페24는 GIF만 등록 가능</span>
+                    </div>
+                    <label class="webp-checkbox-row" for="webp-gif-enabled">
+                        <input type="checkbox" id="webp-gif-enabled" checked>
+                        <span>webP와 같은 컷을 <strong>GIF로도 저장</strong>합니다 (같은 이름, 확장자만 다름)</span>
+                    </label>
+                    <div id="webp-gif-options">
+                        <div class="webp-slider-row">
+                            <input type="range" id="webp-gif-target-size" min="2" max="10" step="0.5" value="5"
+                                   title="GIF가 넘지 않아야 할 최대 용량. 못 맞추면 설정을 낮출지 물어봅니다.">
+                            <span id="webp-gif-target-value" class="webp-target-value">5.0 MB</span>
+                        </div>
+                        <div class="webp-scale"><span>2MB</span><span>6MB</span><span>10MB</span></div>
+                        <div class="webp-hint" style="margin-top: 4px;">
+                            GIF는 용량이 커서 목표에 따라 fps·해상도·색상 수를 자동으로 낮춥니다.
+                        </div>
+                        <div class="webp-slider-row" style="margin-top: 8px;">
+                            <select id="webp-gif-duration" title="GIF 재생 시간. 줄이면 프레임 수가 줄어 같은 용량에서 화질이 좋아집니다.">
+                                <option value="0">재생 길이: 선택 구간 전체</option>
+                                <option value="3">재생 길이: 3초</option>
+                                <option value="2">재생 길이: 2초</option>
+                                <option value="1.5">재생 길이: 1.5초</option>
+                                <option value="1">재생 길이: 1초</option>
+                            </select>
+                            <span id="webp-gif-duration-value" class="webp-target-value">5.0초</span>
+                        </div>
+                        <div class="webp-hint" style="margin-top: 4px;">
+                            ⏱️ 재생 길이를 줄이면 <strong>같은 용량에서 해상도·색상이 더 좋아집니다</strong> (프레임 수에 거의 비례).
+                        </div>
+                    </div>
+                </div>
+
                 <p class="webp-note">
                     <i class="fa-solid fa-circle-info"></i>
                     실제 인코딩을 반복해 목표 용량에 맞추므로 30초~1분 정도 걸립니다.
                     구간이 짧을수록 같은 용량에서 화질이 높아집니다.
+                    <span id="webp-note-gif">GIF 동시 저장 시 인코딩 시간이 조금 더 늘어납니다.</span>
                 </p>
             </div>
             <div class="modal-footer">
@@ -715,7 +752,7 @@
                 <!-- WebP: 목표 용량을 맞추려면 해상도를 낮춰야 할 때의 확인 영역 -->
                 <div id="webp-confirm-box" class="webp-confirm-box hide">
                     <div class="webp-confirm-title">
-                        <i class="fa-solid fa-triangle-exclamation"></i> 해상도를 낮춰야 합니다
+                        <i class="fa-solid fa-triangle-exclamation"></i> <span id="webp-confirm-title">해상도를 낮춰야 합니다</span>
                     </div>
                     <p id="webp-confirm-desc" class="webp-confirm-desc"></p>
                     <div class="webp-confirm-actions">
@@ -749,6 +786,7 @@
                 <button id="btn-open-rendered-file" class="btn btn-secondary hide"><i class="fa-solid fa-play"></i> 결과 영상 재생</button>
                 <button id="btn-open-output-folder" class="btn btn-primary hide"><i class="fa-solid fa-folder-open"></i> 저장 폴더 열기</button>
                 <button id="btn-download-rendered-video" class="btn btn-primary hide"><i class="fa-solid fa-download"></i> 비디오 다운로드</button>
+                <button id="btn-download-rendered-gif" class="btn btn-primary hide"><i class="fa-solid fa-download"></i> GIF 다운로드</button>
                 <button id="btn-render-done" class="btn btn-secondary hide">닫기</button>
             </div>
         </div>

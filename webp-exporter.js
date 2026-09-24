@@ -55,6 +55,221 @@ const MAX_FULL_RETRIES = 2;
 // 해상도 사다리 (긴 변 대비 배율). 종횡비를 유지하며 짝수 픽셀로 반올림한다.
 const SCALE_LADDER = [1.0, 0.85, 0.75, 0.667, 0.5625, 0.5, 0.444];
 
+/* ------------------------------------------------------------------ */
+/* GIF 동시 저장 (용량 목표 관리)                                       */
+/* ------------------------------------------------------------------ */
+
+/**
+ * GIF 후보 사다리 — 앞에서부터 **전체 프레임으로 인코딩**해 보고 목표에 들어가는 첫 후보를 쓴다.
+ *
+ * 왜 예측(솎아내기) 대신 실측인가:
+ *   ffmpeg gif 인코더는 기본으로 프레임 간 델타/투명 최적화(gifflags=offsetting+transdiff)를 한다.
+ *   프레임을 솎으면 인접 프레임 상관이 사라져 프레임당 비용이 실제보다 커진다(실측 +52.7% 과대).
+ *   반면 GIF 인코딩은 webP보다 훨씬 싸므로(1080p 100프레임 ≈ 6초) 그냥 만들어 보는 편이 정확하다.
+ *
+ * 실측(번들 ffmpeg, 실제 릴스 1080x1920·5초 두 편):
+ *   fps12·1080p·128색 21.0 / 47.2MB · fps10·1080p·128색 18.4 / 38.6MB
+ *   fps10·0.85·128색 14.0 / 30.0MB · fps10·0.75·96색 10.0 / 22.1MB
+ *   fps8·0.667·96색 7.0 / 14.4MB · fps8·0.5625·64색 4.4 / 9.7MB
+ *   → 같은 설정에서도 콘텐츠에 따라 2.2배 차이가 나므로 상단은 넉넉히, 하단은 촘촘하게 둔다.
+ *   → fps 를 10 이상으로 유지한 채 해상도·색상을 먼저 깎고, 그래도 안 되면 fps 를 내린다.
+ */
+const GIF_LADDER = [
+    { fps: 15, scale: 1.0000, colors: 256, dither: 'bayer:bayer_scale=5' },
+    { fps: 12, scale: 1.0000, colors: 128, dither: 'none' },
+    { fps: 10, scale: 1.0000, colors: 128, dither: 'none' },
+    { fps: 10, scale: 0.8500, colors: 128, dither: 'none' },
+    { fps: 10, scale: 0.7500, colors: 96, dither: 'none' },
+    { fps: 10, scale: 0.6500, colors: 96, dither: 'none' },
+    { fps: 10, scale: 0.5000, colors: 64, dither: 'none' },
+    { fps: 8, scale: 0.5000, colors: 64, dither: 'none' },
+    { fps: 8, scale: 0.4000, colors: 48, dither: 'none' },
+    { fps: 6, scale: 0.3500, colors: 32, dither: 'none' }
+];
+
+/** GIF 규격 필터 (fps → scale, 팔레트 생성용/적용용 공통) */
+function gifBaseFilter({ fps, width, height }) {
+    return `fps=${fps},scale=${width}:${height}:flags=lanczos`;
+}
+
+/**
+ * 중간본 → GIF 인코딩 1회 (2패스 팔레트).
+ *
+ * 단일 패스(split→palettegen→paletteuse)는 paletteuse 가 팔레트를 EOF 에서야 받아
+ * 전 프레임을 메모리에 버퍼링한다(1080p 100프레임 ≈ 1GB, OOM 실측). 2패스는 같은 결과를
+ * 약 250MB 로 만든다. 팔레트는 scale·colors 가 같을 때만 재사용되므로 후보마다 새로 만든다.
+ *
+ * @returns 생성된 파일 크기(byte)
+ */
+async function encodeGif(params) {
+    const {
+        ffmpegBin, intermediatePath, fps, width, height, colors, dither,
+        outPath, tempDir, registerProcess, duration = 0
+    } = params;
+
+    const base = gifBaseFilter({ fps, width, height });
+    const palettePath = path.join(tempDir, `gif_palette_${fps}_${width}_${colors}.png`);
+    // GIF 재생 길이 제한 — GIF 는 프레임 수에 거의 비례해 커지므로 길이를 줄이면 같은 용량에서 화질을 올릴 수 있다.
+    const trim = (duration > 0) ? ['-t', String(duration)] : [];
+
+    // 1패스: 팔레트 생성
+    await runFFmpeg(ffmpegBin, [
+        '-y', '-i', intermediatePath, '-an', ...trim,
+        '-vf', `${base},palettegen=max_colors=${colors}:stats_mode=diff`,
+        palettePath
+    ], { registerProcess });
+
+    // 2패스: 팔레트 적용
+    await runFFmpeg(ffmpegBin, [
+        '-y', '-i', intermediatePath, '-i', palettePath, '-an', ...trim,
+        '-filter_complex', `[0:v]${base}[x];[x][1:v]paletteuse=dither=${dither}:diff_mode=rectangle`,
+        '-loop', '0', outPath
+    ], { registerProcess });
+
+    safeUnlink(palettePath);
+    return fs.statSync(outPath).size;
+}
+
+/**
+ * GIF 단계 — 중간본에서 목표 용량 이하 GIF를 만든다.
+ *
+ * 사다리를 순서대로 **전체 프레임으로 인코딩**해 보고(=결과물 후보), 목표 이하가 나온 첫 후보를 결과로 쓴다.
+ * (솎아내기 예측은 GIF 에서 성립하지 않는다 — 위 사다리 주석 참고. 인코딩이 싸므로 직접 만든다.)
+ * 사다리 끝까지 목표를 못 맞추면 마지막 후보를 임시로 남겨 두고 needs_confirm 을 돌려준다.
+ *
+ * @returns 완료: { status:'completed', outputPath, sizeBytes, targetBytes, exceededTarget,
+ *                  fps, width, height, colors, scale, attempts }
+ *          미달: { status:'needs_confirm', media:'gif', token, floorSizeBytes, floor:{...}, ... }
+ */
+async function exportGif(params) {
+    const {
+        ffmpegBin, intermediatePath, targetBytes, maxWidth, maxHeight,
+        tempDir, registerProcess, onProgress, outputPath,
+        sourceFps = 20,
+        // GIF 재생 길이(초). 0 이면 선택 구간 전체 — 줄이면 같은 용량에서 화질이 올라간다.
+        duration = 0,
+        // initial      : 사다리 1단계부터 전체 인코딩으로 시도
+        // accept-floor : 사용자가 "가장 낮은 설정으로 저장" 선택 — 이미 만든 마지막 후보를 그대로 확정
+        mode = 'initial'
+    } = params;
+
+    const baseWidth = toEven(maxWidth);
+    const baseHeight = toEven(maxHeight);
+    // 중간본 fps 보다 높은 fps 는 프레임 복제만 늘리므로 클램프한다
+    const dimsOf = (step) => ({
+        width: toEven(baseWidth * step.scale),
+        height: toEven(baseHeight * step.scale),
+        fps: Math.max(1, Math.min(step.fps, Math.round(sourceFps) || step.fps))
+    });
+
+    const partialPath = path.join(tempDir, 'gif_candidate.gif');
+    const floorStep = GIF_LADDER[GIF_LADDER.length - 1];
+
+    if (mode === 'accept-floor') {
+        const dims = dimsOf(floorStep);
+        ensureDir(path.dirname(outputPath));
+        if (fs.existsSync(partialPath)) {
+            commitFile(partialPath, outputPath);
+            const sizeBytes = fs.statSync(outputPath).size;
+            return {
+                status: 'completed', outputPath, sizeBytes, targetBytes,
+                exceededTarget: sizeBytes > targetBytes,
+                fps: dims.fps, width: dims.width, height: dims.height,
+                scale: floorStep.scale, colors: floorStep.colors, duration, attempts: 0
+            };
+        }
+        // 부분 파일이 없으면(프로세스 재시작 등) 최하단 설정으로 새로 만든다
+        const sizeBytes = await encodeGif({
+            ffmpegBin, intermediatePath, fps: dims.fps,
+            width: dims.width, height: dims.height, colors: floorStep.colors, dither: floorStep.dither,
+            outPath: outputPath, tempDir, registerProcess, duration
+        });
+        return {
+            status: 'completed', outputPath, sizeBytes, targetBytes,
+            exceededTarget: sizeBytes > targetBytes,
+            fps: dims.fps, width: dims.width, height: dims.height,
+            scale: floorStep.scale, colors: floorStep.colors, duration, attempts: 1
+        };
+    }
+
+    let attempts = 0;
+    let lastTry = null;
+
+    for (let i = 0; i < GIF_LADDER.length; i++) {
+        const step = GIF_LADDER[i];
+        const dims = dimsOf(step);
+        attempts++;
+
+        if (onProgress) {
+            onProgress({
+                phase: 'gif_try', step: i + 1, totalSteps: GIF_LADDER.length,
+                fps: dims.fps, colors: step.colors,
+                width: dims.width, height: dims.height, targetBytes, attempt: attempts
+            });
+        }
+
+        const sizeBytes = await encodeGif({
+            ffmpegBin, intermediatePath, fps: dims.fps,
+            width: dims.width, height: dims.height, colors: step.colors, dither: step.dither,
+            outPath: partialPath, tempDir, registerProcess, duration
+        });
+        lastTry = { step, dims, sizeBytes };
+
+        if (onProgress) {
+            onProgress({
+                phase: 'gif_try_size', step: i + 1, totalSteps: GIF_LADDER.length,
+                sizeBytes, targetBytes, attempt: attempts
+            });
+        }
+
+        if (sizeBytes <= targetBytes) {
+            ensureDir(path.dirname(outputPath));
+            commitFile(partialPath, outputPath);
+            return {
+                status: 'completed', outputPath, sizeBytes, targetBytes, exceededTarget: false,
+                fps: dims.fps, width: dims.width, height: dims.height,
+                scale: step.scale, colors: step.colors, duration, attempts
+            };
+        }
+    }
+
+    // 사다리 전체가 목표 초과 — 마지막 후보를 남겨 두고 사용자 판단을 기다린다
+    const token = stashIntermediate(intermediatePath, tempDir, {
+        maxWidth: baseWidth, maxHeight: baseHeight, targetBytes
+    });
+    if (onProgress) {
+        onProgress({ phase: 'gif_needs_confirm', floorSizeBytes: lastTry.sizeBytes, targetBytes });
+    }
+    return {
+        status: 'needs_confirm',
+        media: 'gif',
+        token,
+        suggestion: null,          // 더 낮출 단계가 없음 — 클라이언트가 정직하게 안내한다
+        floorSizeBytes: lastTry.sizeBytes,
+        targetBytes,
+        width: lastTry.dims.width,
+        height: lastTry.dims.height,
+        fps: lastTry.dims.fps,
+        colors: lastTry.step.colors,
+        attempts
+    };
+}
+
+/** 임시 후보 파일을 결과 경로로 확정 (다른 볼륨이면 복사로 폴백) */
+function commitFile(fromPath, toPath) {
+    try {
+        fs.renameSync(fromPath, toPath);
+    } catch (err) {
+        fs.copyFileSync(fromPath, toPath);
+        safeUnlink(fromPath);
+    }
+}
+
+/** webP 경로에서 GIF 경로를 만든다 (확장자만 교체 — 상세페이지가 stem 으로 두 포맷을 페어링) */
+function gifPathFor(webpPath) {
+    return /\.webp$/i.test(webpPath) ? webpPath.replace(/\.webp$/i, '.gif') : `${webpPath}.gif`;
+}
+
 // 대기 중인 중간본 토큰 보관 시간 (사용자가 확인 다이얼로그를 방치한 경우 정리)
 const TOKEN_TTL_MS = 10 * 60 * 1000;
 
@@ -484,8 +699,11 @@ async function exportWebp(opts, hooks = {}) {
         // 'initial'           : 프로젝트 해상도로 시도, 실패하면 해상도 하향을 제안
         // 'accept-resolution' : 사용자가 승인한 해상도로 시도, 또 실패하면 더 낮은 단계를 제안
         // 'accept-floor'      : 해상도 하향을 거부 — 품질 하한으로 확정하고 초과를 감수
+        // 'gif-resume'        : webP 는 이미 저장됨 — 같은 중간본으로 GIF 단계만 이어서 진행
         mode = 'initial',
-        reuseToken = null, forcedWidth = null, forcedHeight = null
+        reuseToken = null, forcedWidth = null, forcedHeight = null,
+        // GIF 동시 저장: { enabled, targetBytes, mode, outputPath, maxWidth, maxHeight, sourceFps }
+        gif = null
     } = opts;
 
     const ladder = buildResolutionLadder(maxWidth, maxHeight);
@@ -514,6 +732,26 @@ async function exportWebp(opts, hooks = {}) {
             rangeStart, rangeDuration, fps,
             outPath: intermediatePath, registerProcess
         });
+    }
+
+    // --- GIF 재개 모드: webP 는 이미 저장돼 있으므로 같은 중간본으로 GIF 단계만 수행 ---
+    if (mode === 'gif-resume') {
+        // 사용자가 "가장 낮은 설정으로 저장"을 선택한 재개 — 이미 만들어 둔 후보를 확정한다
+        const gifOutcome = await exportGif({
+            ffmpegBin, intermediatePath,
+            outputPath: gif.outputPath,
+            targetBytes: gif.targetBytes,
+            maxWidth: gif.maxWidth || maxWidth, maxHeight: gif.maxHeight || maxHeight,
+            tempDir, registerProcess, onProgress,
+            sourceFps: gif.sourceFps || fps,
+            duration: gif.duration || 0,
+            mode: gif.mode || 'accept-floor'
+        });
+        if (gifOutcome.status === 'needs_confirm') {
+            return { status: 'needs_confirm', media: 'gif', gif: gifOutcome, resumeOf: 'gif' };
+        }
+        safeRemoveDir(tempDir);
+        return { status: 'completed', resumeOf: 'gif', outputPath, gif: gifOutcome };
     }
 
     // --- 탐색 대상 해상도 결정 ---
@@ -617,6 +855,40 @@ async function exportWebp(opts, hooks = {}) {
         quality = Math.max(QUALITY_MIN, Math.round((quality - drop) * 10) / 10);
     }
 
+    // --- GIF 동시 저장 (선택) ---
+    // webP 는 이미 파일로 저장됐다. GIF 는 같은 무손실 중간본에서 뽑으므로 재합성 비용이 없다.
+    let gifResult = null;
+    if (gif && gif.enabled && gif.targetBytes > 0) {
+        const gifOutcome = await exportGif({
+            ffmpegBin, intermediatePath,
+            outputPath: gif.outputPath || gifPathFor(outputPath),
+            targetBytes: gif.targetBytes,
+            // GIF 기준 해상도는 항상 원본 프로젝트 해상도 (webP 가 낮춘 해상도를 물려받지 않도록)
+            maxWidth: gif.maxWidth || maxWidth, maxHeight: gif.maxHeight || maxHeight,
+            tempDir, registerProcess, onProgress,
+            sourceFps: gif.sourceFps || fps,
+            // 재생 길이 제한 — 프레임 수가 그대로 줄어 같은 용량에서 화질이 올라간다
+            duration: gif.duration || 0,
+            mode: gif.mode || 'initial'
+        });
+
+        if (gifOutcome.status === 'needs_confirm') {
+            // webP 는 완료됐고 GIF 만 사용자 판단이 필요하다 → 중간본을 보관한 채 반환
+            // (tempDir 를 지우지 않는다 — stashIntermediate 가 재사용을 위해 보관 중)
+            return {
+                status: 'needs_confirm',
+                media: 'gif',
+                outputPath,
+                webp: {
+                    width: searchWidth, height: searchHeight, quality, sizeBytes, targetBytes,
+                    exceededTarget: sizeBytes > targetBytes, probes: search ? search.probes : 0, attempts
+                },
+                gif: gifOutcome
+            };
+        }
+        gifResult = gifOutcome;
+    }
+
     safeRemoveDir(tempDir);
 
     return {
@@ -629,12 +901,16 @@ async function exportWebp(opts, hooks = {}) {
         targetBytes,
         exceededTarget: sizeBytes > targetBytes,
         probes: search ? search.probes : 0,
-        attempts
+        attempts,
+        gif: gifResult
     };
 }
 
 module.exports = {
     exportWebp,
+    exportGif,
+    gifPathFor,
+    GIF_LADDER,
     buildResolutionLadder,
     cleanupAllPending,
     cleanupOrphanTemps,

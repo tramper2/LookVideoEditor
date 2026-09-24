@@ -30,6 +30,13 @@ const STATE = {
     webpFps: 20,                           // WebP 프레임 레이트
     isWebpEditMode: false,                 // 타임라인 WebP 구간 편집 모드 활성화 여부
 
+    // GIF 동시 저장 (같은 컷을 .gif 로도 저장 — 29CM·네이버·카페24용)
+    gifEnabled: true,                      // 체크박스 기본 켜짐
+    gifTargetMB: 5,                        // GIF 목표 용량 (MB)
+    gifDuration: 0,                        // GIF 재생 길이(초). 0 = 선택 구간 전체 (줄이면 같은 용량에서 화질↑)
+    webpConfirmTarget: 'webp',             // 확인창이 어느 포맷에 대한 것인지
+    activeRenderGif: null,                 // 마지막 GIF 결과 경로
+
     playerLastSeekTimes: {}, // 플레이어별 마지막 Seek 타임스탬프 (ms, 싱크 지터 방지)
 
     // 렌더링 상태
@@ -41,6 +48,9 @@ const STATE = {
 // WebP 구간 최대 길이(초). 애니메이션 WebP 용량을 감당할 수 있는 상한이다.
 const WEBP_MAX_DURATION = 5;
 const WEBP_MIN_DURATION = 0.5;
+
+// GIF 재생 길이 선택지(초). 0 은 '선택 구간 전체' — index.html 의 옵션 값과 같아야 한다.
+const GIF_DURATION_CHOICES = [3, 2, 1.5, 1];
 
 // 비디오 효과 렌더링용 임시 버퍼 캔버스
 const filterBufferCanvas = document.createElement('canvas');
@@ -169,10 +179,19 @@ const DOM = {
     renderedResultImage: document.getElementById('rendered-result-image'),
     webpResultSummary: document.getElementById('webp-result-summary'),
     webpConfirmBox: document.getElementById('webp-confirm-box'),
+    webpConfirmTitle: document.getElementById('webp-confirm-title'),
     webpConfirmDesc: document.getElementById('webp-confirm-desc'),
     webpConfirmDownscale: document.getElementById('webp-confirm-downscale'),
     webpConfirmFloor: document.getElementById('webp-confirm-floor'),
     webpConfirmCancel: document.getElementById('webp-confirm-cancel'),
+    webpGifEnabled: document.getElementById('webp-gif-enabled'),
+    webpGifTargetSize: document.getElementById('webp-gif-target-size'),
+    webpGifTargetValue: document.getElementById('webp-gif-target-value'),
+    webpGifOptions: document.getElementById('webp-gif-options'),
+    webpGifDuration: document.getElementById('webp-gif-duration'),
+    webpGifDurationValue: document.getElementById('webp-gif-duration-value'),
+    btnDownloadRenderedGif: document.getElementById('btn-download-rendered-gif'),
+    webpNoteGif: document.getElementById('webp-note-gif'),
 
     // WebP 내보내기 설정 모달 및 편집 제어
     btnExportWebp: document.getElementById('btn-export-webp'),
@@ -334,6 +353,25 @@ function setupEventListeners() {
         DOM.webpFps.addEventListener('change', (e) => {
             STATE.webpFps = parseInt(e.target.value, 10) || 20;
             updateWebpModalReadout();
+        });
+    }
+
+    // GIF 동시 저장 (체크박스 + 목표 용량)
+    if (DOM.webpGifEnabled) {
+        DOM.webpGifEnabled.addEventListener('change', (e) => {
+            STATE.gifEnabled = !!e.target.checked;
+            updateGifOptionsUI();
+        });
+    }
+    if (DOM.webpGifTargetSize) {
+        DOM.webpGifTargetSize.addEventListener('input', (e) => {
+            STATE.gifTargetMB = parseFloat(e.target.value) || 5;
+            if (DOM.webpGifTargetValue) DOM.webpGifTargetValue.textContent = `${STATE.gifTargetMB.toFixed(1)} MB`;
+        });
+    }
+    if (DOM.webpGifDuration) {
+        DOM.webpGifDuration.addEventListener('change', (e) => {
+            STATE.gifDuration = Math.max(0, parseFloat(e.target.value) || 0);
         });
     }
 
@@ -2963,8 +3001,12 @@ async function pollRenderProgress() {
 
         const data = await res.json();
 
+        const gifPhase = String((data.gif || {}).phase || '');
+        const inGifStage = gifPhase.startsWith('gif_');
+
         // WebP 내보내기 진행 중이면 단계별 문구와 실시간 용량을 보여준다
-        if (data.status === 'rendering' && data.webp) {
+        // (GIF 단계에서는 webp.phase 가 'final' 로 남아 있으므로 GIF 를 먼저 처리한다)
+        if (data.status === 'rendering' && data.webp && !inGifStage) {
             const w = data.webp;
             const mb = (n) => (n / 1048576).toFixed(2);
 
@@ -2993,6 +3035,39 @@ async function pollRenderProgress() {
             return;
         }
 
+        // GIF 동시 저장 단계가 진행 중이면 GIF 문구를 보여준다
+        if (data.status === 'rendering' && inGifStage) {
+            const g = data.gif;
+            const mbGif = (n) => (n / 1048576).toFixed(2);
+
+            let gifDesc = "GIF를 생성하고 있습니다.";
+            if (g.phase === 'gif_try') {
+                gifDesc = `GIF 설정 ${g.step || 1}/${g.totalSteps || 10} 단계로 인코딩하고 있습니다 ` +
+                    `(목표 이하가 나오면 그 설정으로 저장).`;
+            } else if (g.phase === 'gif_try_size') {
+                gifDesc = `${g.step || 1}/${g.totalSteps || 10} 단계 결과 ${mbGif(g.sizeBytes || 0)}MB — ` +
+                    `목표 ${mbGif(g.targetBytes || 0)}MB와 비교 중입니다.`;
+            }
+
+            const gifParts = [];
+            if (g.width && g.height) gifParts.push(`${g.width}x${g.height}`);
+            if (g.fps) gifParts.push(`${g.fps}fps`);
+            if (g.colors) gifParts.push(`${g.colors}색`);
+            if (g.sizeBytes) gifParts.push(`현재 ${mbGif(g.sizeBytes)}MB`);
+            if (g.targetBytes) gifParts.push(`목표 ${mbGif(g.targetBytes)}MB`);
+
+            updateRenderModalUI({
+                progress: data.progress || 0,
+                desc: gifDesc,
+                currentTime: data.currentTime ? data.currentTime.slice(3, 8) : "00:00",
+                totalTime: formatTimeShort(data.totalDuration || STATE.webpRange.duration),
+                elapsed: data.elapsedTime,
+                fpsInfo: gifParts.join(' · '),
+                status: "rendering"
+            });
+            return;
+        }
+
         if (data.status === 'rendering') {
             updateRenderModalUI({
                 progress: data.progress || 0,
@@ -3003,27 +3078,46 @@ async function pollRenderProgress() {
                 status: "rendering"
             });
         } else if (data.status === 'needs_confirm') {
-            // 목표 용량을 맞추려면 해상도를 낮춰야 한다 — 사용자에게 묻는다
+            // 목표 용량을 맞추려면 설정을 낮춰야 한다 — webP / GIF 중 어느 쪽인지 구분해 묻는다
             clearInterval(STATE.renderPollingTimer);
             STATE.renderPollingTimer = null;
 
-            const w = data.webp || {};
+            const isGifConfirm = !!(data.gif && data.gif.phase === 'needs_confirm');
+            STATE.webpConfirmTarget = isGifConfirm ? 'gif' : 'webp';
+            const w = isGifConfirm ? (data.gif || {}) : (data.webp || {});
             const suggestion = w.suggestion || null;
             STATE.webpSuggestion = suggestion;
 
             const mb = (n) => (n / 1048576).toFixed(2);
-            let desc;
-            if (suggestion) {
-                desc = `${w.width}x${w.height}에서는 목표 ${mb(w.targetBytes || 0)}MB를 맞출 수 없습니다 ` +
-                       `(최소 ${mb(w.floorSizeBytes || 0)}MB).<br>` +
-                       `<strong>${suggestion.width}x${suggestion.height}</strong>로 낮추면 ` +
-                       `약 <strong>${mb(suggestion.estimatedBytes)}MB</strong>로 맞출 수 있습니다.`;
+
+            if (isGifConfirm) {
+                // GIF 는 사다리 최하단에서도 목표를 못 맞춘 상태 — 더 낮출 단계가 없다.
+                // 정직하게 두 갈래(가장 낮은 설정으로 저장 / GIF 건너뛰기)를 제시한다.
+                if (DOM.webpConfirmTitle) DOM.webpConfirmTitle.textContent = "GIF를 목표 용량에 맞출 수 없습니다";
+                if (DOM.webpConfirmDownscale) DOM.webpConfirmDownscale.textContent = "🚫 GIF 건너뛰기 (webP만)";
+                if (DOM.webpConfirmFloor) DOM.webpConfirmFloor.textContent = "가장 낮은 설정으로 저장";
+
+                desc = `가장 낮은 설정(${w.width}x${w.height} · ${w.fps}fps · ${w.colors || 0}색)에서도 ` +
+                       `<strong>${mb(w.floorSizeBytes || 0)}MB</strong>로 목표 ${mb(w.targetBytes || 0)}MB를 넘습니다.<br>` +
+                       `GIF는 webP보다 원래 2~4배 큽니다. 가장 낮은 설정으로 저장하거나, ` +
+                       `GIF를 건너뛰고 webP만 사용(쿠팡용)하세요.<br>` +
+                       `<span class="webp-stat-note">💡 취소 후 <strong>재생 길이를 1~3초로 줄여</strong> 다시 내보내면 ` +
+                       `같은 용량에서 화질을 지키며 목표에 맞출 수 있습니다.</span>`;
             } else {
-                desc = `목표 용량을 맞출 수 있는 해상도가 더 없습니다. 현재 화질로 저장하거나 취소해 주세요.`;
+                if (DOM.webpConfirmTitle) DOM.webpConfirmTitle.textContent = "해상도를 낮춰야 합니다";
+                if (DOM.webpConfirmDownscale) DOM.webpConfirmDownscale.textContent = "낮춰서 진행";
+                if (DOM.webpConfirmFloor) DOM.webpConfirmFloor.textContent = "현재 화질로 저장";
+
+                desc = suggestion
+                    ? `${w.width}x${w.height}에서는 목표 ${mb(w.targetBytes || 0)}MB를 맞출 수 없습니다 ` +
+                      `(최소 ${mb(w.floorSizeBytes || 0)}MB).<br>` +
+                      `<strong>${suggestion.width}x${suggestion.height}</strong>로 낮추면 ` +
+                      `약 <strong>${mb(suggestion.estimatedBytes)}MB</strong>로 맞출 수 있습니다.`
+                    : `목표 용량을 맞출 수 있는 해상도가 더 없습니다. 현재 화질로 저장하거나 취소해 주세요.`;
             }
 
             updateRenderModalUI({
-                heading: "해상도를 낮춰야 합니다",
+                heading: isGifConfirm ? "GIF 용량 확인" : "해상도를 낮춰야 합니다",
                 descHtml: desc,
                 elapsed: data.elapsedTime,
                 status: "needs_confirm"
@@ -3031,7 +3125,8 @@ async function pollRenderProgress() {
 
             if (DOM.webpConfirmBox) DOM.webpConfirmBox.classList.remove('hide');
             if (DOM.webpConfirmDownscale) {
-                DOM.webpConfirmDownscale.classList.toggle('hide', !suggestion);
+                // GIF 확인에서는 '건너뛰기' 버튼이므로 숨기지 않는다
+                DOM.webpConfirmDownscale.classList.toggle('hide', !suggestion && !isGifConfirm);
             }
         } else if (data.status === 'completed') {
             clearInterval(STATE.renderPollingTimer);
@@ -3040,12 +3135,21 @@ async function pollRenderProgress() {
             if (data.webp) {
                 // WebP 결과는 <video> 로 재생되지 않으므로 <img> 로 보여준다
                 const w = data.webp;
+                const gifSkipped = !!(data.gif && data.gif.phase === 'skipped');
+                const g = data.gif && data.gif.phase === 'completed' ? data.gif : null;
+                STATE.activeRenderGif = g ? (data.gifFile || null) : null;
                 updateRenderModalUI({
                     progress: 100,
-                    heading: "WebP 내보내기 완료!",
-                    desc: "애니메이션 WebP가 생성되었습니다.",
+                    heading: g ? "WebP + GIF 내보내기 완료!" : "WebP 내보내기 완료!",
+                    desc: g
+                        ? "애니메이션 WebP와 GIF가 함께 생성되었습니다 (쇼핑몰별로 맞는 파일을 사용하세요)."
+                        : (gifSkipped
+                            ? "애니메이션 WebP가 생성되었습니다. GIF는 건너뛰었습니다."
+                            : "애니메이션 WebP가 생성되었습니다."),
                     outputFile: data.outputFile || STATE.activeRenderOutput,
                     outputUrl: data.outputUrl,
+                    gifFile: data.gifFile || null,
+                    gifUrl: data.gifUrl || null,
                     elapsed: data.elapsedTime,
                     isAnimatedImage: true,
                     metaRes: `${w.width} x ${w.height}`,
@@ -3057,7 +3161,19 @@ async function pollRenderProgress() {
                         targetBytes: w.targetBytes,
                         exceededTarget: w.exceededTarget,
                         probes: w.probes,
-                        duration: STATE.webpRange.duration
+                        duration: STATE.webpRange.duration,
+                        gif: g ? {
+                            fps: g.fps,
+                            width: g.width,
+                            height: g.height,
+                            colors: g.colors,
+                            sizeBytes: g.sizeBytes,
+                            targetBytes: g.targetBytes,
+                            exceededTarget: g.exceededTarget,
+                            // 0 = 선택 구간 전체 (서버가 실제 적용한 재생 길이)
+                            duration: g.duration || 0,
+                            rangeDuration: STATE.webpRange.duration
+                        } : null
                     },
                     status: "completed"
                 });
@@ -3369,14 +3485,31 @@ function updateRenderModalUI(data) {
                 const mb = (n) => (n / 1048576).toFixed(2);
                 const over = s.exceededTarget
                     ? ` <span class="webp-over-target">(목표 초과)</span>` : '';
-                DOM.webpResultSummary.innerHTML =
-                    `<span class="webp-stat-label">결과</span> ` +
+                let summaryHtml =
+                    `<span class="webp-stat-label">webP</span> ` +
                     `<span class="webp-stat-value">${s.duration.toFixed(1)}초 · ${s.width}x${s.height} · ` +
                     `q=${s.quality} · ${mb(s.sizeBytes)}MB</span>${over}<br>` +
                     `<span class="webp-stat-label">목표</span> ` +
                     `<span class="webp-stat-value">${mb(s.targetBytes)}MB 이하</span> · ` +
                     `<span class="webp-stat-label">시험 인코딩</span> ` +
                     `<span class="webp-stat-value">${s.probes}회</span>`;
+                // GIF 동시 저장 결과 — 쇼핑몰 등록용이므로 실제 설정을 그대로 노출한다
+                if (s.gif) {
+                    const gOver = s.gif.exceededTarget
+                        ? ` <span class="webp-over-target">(목표 초과)</span>` : '';
+                    // 재생 길이를 줄였으면 실제로 몇 초짜리인지, 원래 구간이 몇 초였는지 함께 보여준다
+                    const gDur = s.gif.duration > 0
+                        ? `${s.gif.duration.toFixed(1)}초` : s.gif.rangeDuration.toFixed(1) + '초';
+                    const gTrim = s.gif.duration > 0 && s.gif.duration < s.gif.rangeDuration
+                        ? ` <span class="webp-stat-note">(구간 ${s.gif.rangeDuration.toFixed(1)}초 중)</span>` : '';
+                    summaryHtml +=
+                        `<br><span class="webp-stat-label">GIF</span> ` +
+                        `<span class="webp-stat-value">${gDur} · ${s.gif.fps}fps · ${s.gif.width}x${s.gif.height} · ` +
+                        `${s.gif.colors}색 · ${mb(s.gif.sizeBytes)}MB</span>${gOver}${gTrim}<br>` +
+                        `<span class="webp-stat-label">GIF 목표</span> ` +
+                        `<span class="webp-stat-value">${mb(s.gif.targetBytes)}MB 이하</span>`;
+                }
+                DOM.webpResultSummary.innerHTML = summaryHtml;
                 DOM.webpResultSummary.classList.remove('hide');
             } else {
                 DOM.webpResultSummary.classList.add('hide');
@@ -3390,6 +3523,7 @@ function updateRenderModalUI(data) {
 
         if (data.isBrowserBlob) {
             DOM.btnDownloadRenderedVideo.classList.remove('hide');
+            DOM.btnDownloadRenderedVideo.innerHTML = `<i class="fa-solid fa-download"></i> 비디오 다운로드`;
             DOM.btnDownloadRenderedVideo.onclick = () => {
                 const a = document.createElement('a');
                 a.href = data.blobUrl;
@@ -3402,6 +3536,9 @@ function updateRenderModalUI(data) {
             DOM.btnOpenRenderedFile.classList.remove('hide');
             DOM.btnOpenOutputFolder.classList.remove('hide');
             DOM.btnDownloadRenderedVideo.classList.remove('hide');
+            // 애니메이션 결과는 같은 버튼을 쓰므로 라벨을 결과 종류에 맞춘다 (GIF 버튼과 짝)
+            DOM.btnDownloadRenderedVideo.innerHTML =
+                `<i class="fa-solid fa-download"></i> ${data.isAnimatedImage ? 'webP 다운로드' : '비디오 다운로드'}`;
             DOM.btnDownloadRenderedVideo.onclick = () => {
                 const a = document.createElement('a');
                 const cleanPath = (data.outputUrl || data.outputFile || STATE.activeRenderOutput || '').replace(/\\/g, '/');
@@ -3411,6 +3548,25 @@ function updateRenderModalUI(data) {
                 a.click();
                 document.body.removeChild(a);
             };
+        }
+
+        // GIF 동시 저장 결과 다운로드 버튼
+        if (DOM.btnDownloadRenderedGif) {
+            const gifFile = data.gifFile || STATE.activeRenderGif || null;
+            if (gifFile) {
+                DOM.btnDownloadRenderedGif.classList.remove('hide');
+                DOM.btnDownloadRenderedGif.onclick = () => {
+                    const a = document.createElement('a');
+                    const cleanPath = (data.gifUrl || gifFile).replace(/\\/g, '/');
+                    a.href = cleanPath.startsWith('/') ? cleanPath : `/${cleanPath}`;
+                    a.download = String(gifFile).split(/[\\\/]/).pop();
+                    document.body.appendChild(a);
+                    a.click();
+                    document.body.removeChild(a);
+                };
+            } else {
+                DOM.btnDownloadRenderedGif.classList.add('hide');
+            }
         }
     } else if (data.status === 'needs_confirm') {
         // 확인 UI 는 pollRenderProgress 가 띄운다. 여기서는 스피너만 멈춘다.
@@ -3446,6 +3602,10 @@ function openRenderModal() {
     if (DOM.renderedResultImage) {
         DOM.renderedResultImage.classList.add('hide');
         DOM.renderedResultImage.removeAttribute('src');
+    }
+    if (DOM.btnDownloadRenderedGif) {
+        DOM.btnDownloadRenderedGif.classList.add('hide');
+        DOM.btnDownloadRenderedGif.onclick = null;
     }
     const videoEl = document.getElementById('rendered-result-video');
     if (videoEl) {
@@ -3500,6 +3660,47 @@ function updateWebpModalReadout() {
         const frames = Math.max(1, Math.round(range.duration * fps));
         DOM.webpRangeDuration.textContent = `${range.duration.toFixed(1)}초 · ${frames}프레임`;
     }
+    // 구간이 바뀌면 고를 수 있는 GIF 재생 길이도 달라진다
+    updateGifDurationOptions();
+}
+
+/**
+ * GIF 재생 길이 옵션을 현재 선택 구간에 맞춘다.
+ * 구간보다 긴 길이는 고를 수 없으므로 비활성화하고, 실효 길이를 함께 보여준다.
+ */
+function updateGifDurationOptions() {
+    if (!DOM.webpGifDuration) return;
+    const rangeDur = clampWebpRange().duration;
+
+    // 구간보다 긴 항목은 선택 불가
+    let selectionDisabled = false;
+    for (const opt of DOM.webpGifDuration.options) {
+        const val = parseFloat(opt.value) || 0;
+        const tooLong = val > 0 && val > rangeDur + 0.05;
+        opt.disabled = tooLong;
+        if (tooLong && opt.selected) selectionDisabled = true;
+    }
+    if (selectionDisabled) {
+        STATE.gifDuration = 0;
+        DOM.webpGifDuration.value = '0';
+    }
+    DOM.webpGifDuration.value = String(STATE.gifDuration);
+
+    const effDur = STATE.gifDuration > 0 ? Math.min(STATE.gifDuration, rangeDur) : rangeDur;
+    if (DOM.webpGifDurationValue) {
+        DOM.webpGifDurationValue.textContent = `${effDur.toFixed(1)}초`;
+    }
+}
+
+/** GIF 옵션 영역 표시/숨김 (체크박스 상태 반영) */
+function updateGifOptionsUI() {
+    if (DOM.webpGifOptions) {
+        DOM.webpGifOptions.classList.toggle('disabled', !STATE.gifEnabled);
+    }
+    if (DOM.webpGifTargetSize) DOM.webpGifTargetSize.disabled = !STATE.gifEnabled;
+    if (DOM.webpGifDuration) DOM.webpGifDuration.disabled = !STATE.gifEnabled;
+    if (DOM.webpNoteGif) DOM.webpNoteGif.style.display = STATE.gifEnabled ? '' : 'none';
+    updateGifDurationOptions();
 }
 
 function openWebpModal() {
@@ -3513,6 +3714,11 @@ function openWebpModal() {
     DOM.webpTargetSize.value = STATE.webpTargetMB;
     DOM.webpTargetValue.textContent = `${STATE.webpTargetMB.toFixed(1)} MB`;
     DOM.webpFps.value = String(STATE.webpFps);
+    if (DOM.webpGifEnabled) DOM.webpGifEnabled.checked = !!STATE.gifEnabled;
+    if (DOM.webpGifTargetSize) DOM.webpGifTargetSize.value = String(STATE.gifTargetMB);
+    if (DOM.webpGifTargetValue) DOM.webpGifTargetValue.textContent = `${STATE.gifTargetMB.toFixed(1)} MB`;
+    if (DOM.webpGifDuration) DOM.webpGifDuration.value = String(STATE.gifDuration);
+    updateGifOptionsUI();
     updateWebpModalReadout();
 
     DOM.webpModal.classList.remove('hide');
@@ -3530,6 +3736,10 @@ async function startWebpExportFromModal() {
     const range = STATE.webpRange;
     const targetMB = parseFloat(DOM.webpTargetSize.value) || STATE.webpTargetMB;
     const fps = parseInt(DOM.webpFps.value, 10) || STATE.webpFps;
+    // GIF 재생 길이: 0 = 선택 구간 전체. 구간보다 길 수는 없다.
+    const gifDuration = STATE.gifDuration > 0
+        ? Math.min(STATE.gifDuration, range.duration)
+        : 0;
 
     STATE.webpTargetMB = targetMB;
     STATE.webpFps = fps;
@@ -3570,7 +3780,10 @@ async function startWebpExportFromModal() {
                 targetMB,
                 outputWidth: STATE.outputWidth,
                 outputHeight: STATE.outputHeight,
-                outputFile
+                outputFile,
+                gifEnabled: !!STATE.gifEnabled,
+                gifTargetMB: STATE.gifTargetMB,
+                gifDuration
             })
         });
 
@@ -3578,11 +3791,15 @@ async function startWebpExportFromModal() {
         if (!res.ok) throw new Error(data.error || 'WebP 내보내기 시작이 거부되었습니다.');
 
         STATE.activeRenderOutput = outputFile;
+        STATE.activeRenderGif = null;
+        STATE.webpConfirmTarget = 'webp';
 
         updateRenderModalUI({
             heading: "애니메이션 WebP 인코딩 중...",
-            desc: "목표 용량에 맞춰 품질을 탐색하고 있습니다.",
-            engine: "로컬 FFmpeg (WebP 품질 탐색)",
+            desc: STATE.gifEnabled
+                ? `목표 용량에 맞춰 품질을 탐색하고 있습니다. 완료 후 GIF(목표 ${STATE.gifTargetMB.toFixed(1)}MB${gifDuration > 0 ? `, ${gifDuration.toFixed(1)}초 재생` : ''})도 이어서 생성합니다.`
+                : "목표 용량에 맞춰 품질을 탐색하고 있습니다.",
+            engine: STATE.gifEnabled ? "로컬 FFmpeg (WebP 품질 탐색 + GIF 동시 저장)" : "로컬 FFmpeg (WebP 품질 탐색)",
             status: "rendering"
         });
 
@@ -3616,9 +3833,14 @@ async function confirmWebpDownscale(accept) {
 
     try {
         const suggestion = STATE.webpSuggestion || {};
-        const payload = accept
-            ? { action: 'downscale', width: suggestion.width, height: suggestion.height }
-            : { action: 'floor' };
+        const isGif = STATE.webpConfirmTarget === 'gif';
+        // GIF 확인: accept = "가장 낮은 설정으로 저장"(floor), 거부 = "GIF 건너뛰기"(skip)
+        // webP 확인: accept = 해상도 하향, 거부 = 현재 화질로 저장(floor)
+        const payload = isGif
+            ? { action: accept ? 'floor' : 'skip', target: 'gif' }
+            : (accept
+                ? { action: 'downscale', width: suggestion.width, height: suggestion.height }
+                : { action: 'floor' });
 
         const res = await fetch('/api/render/webp/confirm', {
             method: 'POST',
@@ -3628,11 +3850,25 @@ async function confirmWebpDownscale(accept) {
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || '요청이 거부되었습니다.');
 
+        if (isGif && !accept) {
+            // 건너뛰기는 서버가 바로 완료 처리한다 — 폴링 없이 결과를 반영한다
+            updateRenderModalUI({
+                heading: "GIF를 건너뛰었습니다",
+                desc: "webP 결과만 저장되었습니다. (쿠팡은 webP만 사용하므로 문제 없습니다)",
+                status: "completed"
+            });
+            return;
+        }
+
         updateRenderModalUI({
-            heading: accept ? "낮춘 해상도로 다시 인코딩 중..." : "현재 화질로 저장 중...",
-            desc: accept
-                ? `${suggestion.width}x${suggestion.height} 기준으로 품질을 다시 탐색합니다.`
-                : "품질 하한으로 전체 프레임을 인코딩하고 있습니다.",
+            heading: isGif
+                ? "가장 낮은 설정으로 GIF를 저장하는 중..."
+                : (accept ? "낮춘 해상도로 다시 인코딩 중..." : "현재 화질로 저장 중..."),
+            desc: isGif
+                ? "GIF를 확정 인코딩하고 있습니다 (목표를 넘을 수 있습니다)."
+                : (accept
+                    ? `${suggestion.width}x${suggestion.height} 기준으로 품질을 다시 탐색합니다.`
+                    : "품질 하한으로 전체 프레임을 인코딩하고 있습니다."),
             status: "rendering"
         });
 
@@ -3712,8 +3948,12 @@ function confirmNewProject() {
         STATE.webpRange = { start: 0, duration: WEBP_MAX_DURATION };
         STATE.webpTargetMB = 3;
         STATE.webpFps = 20;
+        STATE.gifEnabled = true;
+        STATE.gifTargetMB = 5;
+        STATE.gifDuration = 0;
         STATE.isWebpEditMode = false;
         updateWebpEditModeUI();
+        updateGifOptionsUI();
 
         updatePreviewResolution();
         selectClip(null);
@@ -3747,7 +3987,11 @@ function saveProjectFile() {
         // 애니메이션 WebP 내보내기 설정
         webpRange: { start: STATE.webpRange.start, duration: STATE.webpRange.duration },
         webpTargetMB: STATE.webpTargetMB,
-        webpFps: STATE.webpFps
+        webpFps: STATE.webpFps,
+        // GIF 동시 저장 설정
+        gifEnabled: STATE.gifEnabled,
+        gifTargetMB: STATE.gifTargetMB,
+        gifDuration: STATE.gifDuration
     };
 
     const blob = new Blob([JSON.stringify(projectData, null, 4)], { type: 'application/json' });
@@ -3801,8 +4045,18 @@ function loadProjectFile(e) {
             STATE.webpTargetMB = Number.isFinite(data.webpTargetMB)
                 ? Math.min(7, Math.max(2, data.webpTargetMB)) : 3;
             STATE.webpFps = Number.isFinite(data.webpFps) ? data.webpFps : 20;
+            // GIF 동시 저장 설정 (없던 프로젝트는 기본값 — 켜짐 / 5MB)
+            STATE.gifEnabled = typeof data.gifEnabled === 'boolean' ? data.gifEnabled : true;
+            STATE.gifTargetMB = Number.isFinite(data.gifTargetMB)
+                ? Math.min(10, Math.max(2, data.gifTargetMB)) : 5;
+            // 재생 길이 0 = 선택 구간 전체. 구간보다 길면 구간 길이로 깎는다.
+            // 드롭다운에 없는 값이 저장돼 있으면 UI 와 어긋나므로 가장 가까운 항목으로 맞춘다.
+            const savedGifDuration = Number.isFinite(data.gifDuration)
+                ? Math.min(data.gifDuration, STATE.webpRange.duration) : 0;
+            STATE.gifDuration = GIF_DURATION_CHOICES.find(v => v <= savedGifDuration + 0.001) || 0;
             STATE.isWebpEditMode = false;
             updateWebpEditModeUI();
+            updateGifOptionsUI();
 
             if (DOM.projectResolution) {
                 DOM.projectResolution.value = `${STATE.outputWidth}x${STATE.outputHeight}`;

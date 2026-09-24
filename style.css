@@ -1738,6 +1738,36 @@ body.resizing-row {
     text-align: right;
 }
 
+/* GIF 동시 저장 체크박스 행 */
+.webp-checkbox-row {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    cursor: pointer;
+    font-size: 12px;
+    line-height: 1.5;
+    color: var(--text-main, #e2e8f0);
+}
+.webp-checkbox-row input[type="checkbox"] {
+    width: 15px;
+    height: 15px;
+    margin-top: 2px;
+    accent-color: var(--accent-color, #3b82f6);
+    cursor: pointer;
+    flex: 0 0 auto;
+}
+.webp-checkbox-row strong {
+    color: var(--accent-color, #60a5fa);
+}
+#webp-gif-options {
+    margin-top: 10px;
+    padding-left: 23px;
+}
+#webp-gif-options.disabled {
+    opacity: 0.45;
+    pointer-events: none;
+}
+
 .webp-range-readout {
     display: flex;
     align-items: center;
@@ -1779,6 +1809,28 @@ body.resizing-row {
     font-size: 17px;
     font-weight: 700;
     font-variant-numeric: tabular-nums;
+}
+
+/* GIF 재생 길이 선택 (드롭다운 + 실효 길이 표시) */
+.webp-slider-row select {
+    flex: 1;
+    min-width: 0;
+    padding: 6px 8px;
+    border-radius: 6px;
+    border: 1px solid rgba(148, 163, 184, 0.35);
+    background: rgba(15, 23, 42, 0.75);
+    color: var(--text-main, #e2e8f0);
+    font-size: 12px;
+    cursor: pointer;
+}
+
+.webp-slider-row select:disabled {
+    cursor: not-allowed;
+}
+
+#webp-gif-duration-value {
+    min-width: 56px;
+    font-size: 14px;
 }
 
 .webp-scale {
@@ -1886,6 +1938,12 @@ body.resizing-row {
 .webp-result-summary .webp-over-target {
     color: var(--warning);
     font-weight: 600;
+}
+
+/* 재생 길이를 줄였을 때의 부가 설명 (결과 요약 · 확인창 공용) */
+.webp-stat-note {
+    color: var(--text-muted);
+    font-size: 12px;
 }
 
 /* ========================================================================
