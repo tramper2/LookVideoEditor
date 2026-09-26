@@ -90,12 +90,28 @@ function generateFFmpegCommand(projectState) {
     // 3. Audio (BGM) 클립 입력 정의
     const audioMappings = audioClips.map((clip, index) => {
         const inputIdx = currentInputIndex++;
-        const srcDur = clip.sourceEnd - clip.sourceStart;
-        inputs.push(`-ss ${formatTime(clip.sourceStart)} -t ${formatTime(srcDur)} -i "${clip.localPath}"`);
+
+        // 반복 재생(loop) 처리
+        //  -stream_loop 은 매 회차를 "파일 0초"에서 시작한다. 그래서 -ss 와 함께 쓰면
+        //  회차마다 재생 구간이 어긋나므로(실측), 루프 클립은 파일 처음부터 읽는다.
+        const useLoop = clip.loop === true;
+        const loopSrcDur = useLoop ? Math.max(0.05, clip.sourceEnd || clip.duration) : 0;
+        // -stream_loop N 은 "N회 추가 재생"(총 N+1회)이므로 필요한 만큼만 계산한다.
+        // 최종 출력의 -t(projectDuration)가 정확히 잘라내므로 과다 반복은 문제되지 않는다.
+        const loopCount = useLoop
+            ? Math.max(0, Math.min(1000, Math.ceil(clip.duration / loopSrcDur) - 1))
+            : 0;
+
+        const readStart = useLoop ? 0 : clip.sourceStart;
+        const readDur = (useLoop && loopCount > 0) ? clip.duration : (clip.sourceEnd - clip.sourceStart);
+        const loopOption = loopCount > 0 ? `-stream_loop ${loopCount} ` : '';
+
+        inputs.push(`${loopOption}-ss ${formatTime(readStart)} -t ${formatTime(readDur)} -i "${clip.localPath}"`);
         rawInputs.push({
-            ss: formatTime(clip.sourceStart),
-            t: formatTime(srcDur),
-            path: clip.localPath
+            ss: formatTime(readStart),
+            t: formatTime(readDur),
+            path: clip.localPath,
+            loop: loopCount        // 0 이면 루프 없음 (server.js 가 -stream_loop 을 넣지 않는다)
         });
         return { clip, inputIdx };
     });
@@ -159,6 +175,16 @@ function generateFFmpegCommand(projectState) {
             });
         }
         
+        // 1.5 타임라인 위치로 PTS 이동 (overlay 프레임싱크 정합)
+        //     overlay 는 enable 로 화면을 가려도 두 번째 입력의 프레임을 자기 PTS 순서대로 계속 소비한다.
+        //     PTS 를 옮기지 않으면 timelineStart 이전 구간에서 클립 프레임이 전부 소진되고,
+        //     기본 eof_action=repeat 때문에 마지막 프레임만 정지화면으로 남는다.
+        //     (오디오는 adelay 로 이미 시프트되므로 영상만 맞춰주면 된다)
+        const timelineOffset = clip.timelineStart || 0;
+        if (timelineOffset > 0.001) {
+            vFilters.push(`setpts=PTS+${timelineOffset.toFixed(2)}/TB`);
+        }
+
         // FPS 통일
         vFilters.push(`fps=${outFPS}`);
         
@@ -237,6 +263,12 @@ function generateFFmpegCommand(projectState) {
         
         vFilters.push(`fps=${outFPS}`);
         
+        // 2.5 타임라인 위치로 PTS 이동 (overlay 프레임싱크 정합, Video Track 1 과 동일한 이유)
+        const timelineOffset = clip.timelineStart || 0;
+        if (timelineOffset > 0.001) {
+            vFilters.push(`setpts=PTS+${timelineOffset.toFixed(2)}/TB`);
+        }
+
         const vol = clip.volume !== undefined ? clip.volume : 1.0;
         aFilters.push(`volume=${vol}`);
         aFilters.push("aresample=44100");
