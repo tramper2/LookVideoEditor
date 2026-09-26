@@ -124,6 +124,7 @@ const DOM = {
     propPipY: document.getElementById('prop-pip-y'),
     propAudioVolume: document.getElementById('prop-audio-volume'),
     propAudioVolumeLabel: document.getElementById('prop-audio-volume-label'),
+    propAudioLoop: document.getElementById('prop-audio-loop'),
     propTextContent: document.getElementById('prop-text-content'),
     propTextSize: document.getElementById('prop-text-size'),
     propTextColor: document.getElementById('prop-text-color'),
@@ -170,6 +171,22 @@ const DOM = {
     renderCompleteActions: document.getElementById('render-complete-actions'),
     renderOutputFilename: document.getElementById('render-output-filename'),
     btnCancelRender: document.getElementById('btn-cancel-render'),
+
+    // 무료 음악 검색 모달 요소
+    btnSearchMusic: document.getElementById('btn-search-music'),
+    musicSearchModal: document.getElementById('music-search-modal'),
+    musicSearchInput: document.getElementById('music-search-input'),
+    btnMusicSearchRun: document.getElementById('btn-music-search-run'),
+    btnCloseMusicModal: document.getElementById('btn-close-music-modal'),
+    btnCloseMusicModalFooter: document.getElementById('btn-close-music-modal-footer'),
+    musicTranslateHint: document.getElementById('music-translate-hint'),
+    musicKeywordChips: document.getElementById('music-keyword-chips'),
+    musicFilterDuration: document.getElementById('music-filter-duration'),
+    musicLoopIfShort: document.getElementById('music-loop-if-short'),
+    musicResultCount: document.getElementById('music-result-count'),
+    musicResultList: document.getElementById('music-result-list'),
+    musicStatus: document.getElementById('music-status'),
+    musicServerWarning: document.getElementById('music-server-warning'),
     btnOpenRenderedFile: document.getElementById('btn-open-rendered-file'),
     btnOpenOutputFolder: document.getElementById('btn-open-output-folder'),
     btnDownloadRenderedVideo: document.getElementById('btn-download-rendered-video'),
@@ -321,6 +338,42 @@ function setupEventListeners() {
             e.target.value = '';
         }
     });
+
+    // 무료 음악 검색 (온라인 CC0/퍼블릭 도메인)
+    if (DOM.btnSearchMusic) DOM.btnSearchMusic.addEventListener('click', openMusicSearchModal);
+    if (DOM.btnMusicSearchRun) DOM.btnMusicSearchRun.addEventListener('click', runMusicSearch);
+    if (DOM.musicSearchInput) {
+        DOM.musicSearchInput.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') { e.preventDefault(); runMusicSearch(); }
+        });
+    }
+    [DOM.btnCloseMusicModal, DOM.btnCloseMusicModalFooter].forEach(btn => {
+        if (btn) btn.addEventListener('click', closeMusicSearchModal);
+    });
+    if (DOM.musicSearchModal) {
+        DOM.musicSearchModal.addEventListener('click', (e) => {
+            if (e.target === DOM.musicSearchModal) closeMusicSearchModal();
+        });
+    }
+    if (DOM.musicFilterDuration) {
+        DOM.musicFilterDuration.addEventListener('change', () => {
+            if (musicState.lastQuery) runMusicSearch();
+        });
+    }
+
+    // 오디오 클립 반복 재생 토글
+    //  updateSelectedClipFromInputs 에 태우지 않는다 — 그쪽 else 분기가 clip.duration 을
+    //  입력값으로 덮어써서 루프용 길이 확장이 취소되기 때문이다.
+    if (DOM.propAudioLoop) {
+        DOM.propAudioLoop.addEventListener('change', () => {
+            const clip = STATE.clips.find(c => c.id === STATE.selectedClipId);
+            if (!clip || clip.track !== 'audio') return;
+            setClipLoop(clip, DOM.propAudioLoop.checked);
+            updateTimelineClipsUI();
+            recalculateTotalDuration();
+            renderPreview();
+        });
+    }
 
     // 프로젝트 관리 이벤트
     DOM.btnNewProject.addEventListener('click', confirmNewProject);
@@ -1435,8 +1488,23 @@ function addAssetToTimeline(assetId, trackType, timelineStart) {
     }
 
     const clipId = 'clip_' + Date.now() + '_' + Math.random().toString(36).substr(2, 5);
-    const duration = asset.type === 'image' ? 5.0 : Math.min(asset.duration, 10.0);
-    
+
+    // 클립 길이 결정
+    //  - 이미지 : 5초 고정 (기존 관례)
+    //  - 오디오 : 10초 상한을 없앤다. 다만 음악이 영상보다 길면 영상 길이에 맞춰 자른다.
+    //             (그냥 두면 타임라인이 음악 길이만큼 늘어나 뒤쪽이 검은 화면이 된다)
+    //  - 비디오 : 기존과 동일하게 10초까지
+    const assetDur = (Number.isFinite(asset.duration) && asset.duration > 0) ? asset.duration : 5.0;
+    let duration;
+    if (asset.type === 'image') {
+        duration = 5.0;
+    } else if (asset.type === 'audio') {
+        const remain = getProjectContentDuration() - timelineStart;
+        duration = (remain > 0.1) ? Math.min(assetDur, remain) : assetDur;
+    } else {
+        duration = Math.min(assetDur, 10.0);
+    }
+
     // 기본 클립 객체 정의
     const newClip = {
         id: clipId,
@@ -1550,13 +1618,18 @@ function updateTimelineClipsUI() {
             speedBadgeHtml = `<span class="clip-speed-badge">${clip.speed.toFixed(1)}x</span>`;
         }
 
+        let loopBadgeHtml = '';
+        if (clip.loop === true) {
+            loopBadgeHtml = `<span class="clip-loop-badge" title="반복 재생"><i class="fa-solid fa-repeat"></i></span>`;
+        }
+
         let displayName = clip.name;
         if (clip.overlayType === 'text') displayName = clip.text || '자막 텍스트';
 
         clipEl.innerHTML = `
             <div class="trim-handle trim-handle-left" data-handle="left"></div>
             <span class="clip-name">${displayName}</span>
-            ${speedBadgeHtml}
+            ${speedBadgeHtml}${loopBadgeHtml}
             <span class="clip-duration-info">${clip.duration.toFixed(1)}s [${clip.sourceStart.toFixed(1)}~${clip.sourceEnd.toFixed(1)}]</span>
             <div class="trim-handle trim-handle-right" data-handle="right"></div>
         `;
@@ -1718,6 +1791,7 @@ function selectClip(clipId) {
         DOM.audioPropertiesSection.classList.remove('hide');
         DOM.propAudioVolume.value = clip.volume !== undefined ? clip.volume : 1.0;
         DOM.propAudioVolumeLabel.textContent = Math.round((clip.volume !== undefined ? clip.volume : 1.0) * 100);
+        if (DOM.propAudioLoop) DOM.propAudioLoop.checked = clip.loop === true;
     } else if (clip.track === 'overlay') {
         DOM.overlayPropertiesSection.classList.remove('hide');
         DOM.propTextX.value = clip.x || 0;
@@ -1953,6 +2027,22 @@ function getProjectContentDuration() {
         if (end > maxEnd) maxEnd = end;
     });
     return parseFloat(maxEnd.toFixed(2));
+}
+
+/**
+ * 플레이헤드 시각에 대응하는 "소스 파일 안에서의 재생 위치"를 계산한다.
+ * 반복 재생(loop) 클립은 소스 길이로 나눈 나머지를 써야 끝에서 멈추지 않는다.
+ * updateActivePlayersStates / syncHiddenPlayersTime 이 공유한다.
+ */
+function getClipSourceTime(clip, playheadTime) {
+    const speed = clip.speed || 1.0;
+    const elapsed = Math.max(0, playheadTime - clip.timelineStart) * speed;
+    const sourceStart = clip.sourceStart || 0;
+    const sourceDur = (clip.sourceEnd || clip.duration) - sourceStart;
+    if (clip.loop && sourceDur > 0.05) {
+        return sourceStart + (elapsed % sourceDur);
+    }
+    return sourceStart + elapsed;
 }
 
 // 타임라인 총 길이 재계산
@@ -2313,6 +2403,8 @@ function initClipTrim(e, clip, handle) {
 
 // --- 재생 제어 엔진 (HTML5 Canvas & Web Audio) ---
 function togglePlayback() {
+    // 타임라인 재생을 시작하면 음악 미리듣기는 겹치지 않게 멈춘다
+    stopMusicPreview();
     if (STATE.isPlaying) {
         stopPlayback();
     } else {
@@ -2381,9 +2473,8 @@ function updateActivePlayersStates() {
         const activeClip = STATE.clips.find(c => c.assetId === asset.id && time >= c.timelineStart && time < c.timelineStart + c.duration);
         
         if (activeClip) {
-            const clipElapsed = time - activeClip.timelineStart;
             const speed = activeClip.speed || 1.0;
-            const targetTime = activeClip.sourceStart + clipElapsed * speed;
+            const targetTime = getClipSourceTime(activeClip, time);
 
             if (player.paused && player.readyState >= 2) {
                 try {
@@ -2434,11 +2525,9 @@ function syncHiddenPlayersTime() {
         
         const activeClip = STATE.clips.find(c => c.assetId === asset.id && time >= c.timelineStart && time < c.timelineStart + c.duration);
         if (activeClip) {
-            const clipElapsed = time - activeClip.timelineStart;
-            const speed = activeClip.speed || 1.0;
             if (player.readyState >= 1) {
                 try {
-                    player.currentTime = activeClip.sourceStart + clipElapsed * speed;
+                    player.currentTime = getClipSourceTime(activeClip, time);
                 } catch (e) {}
             }
         }
@@ -4262,4 +4351,390 @@ function initResizablePanels() {
 
         drawRuler();
     }
+}
+
+// ─────────────────────────────────────────────────────────────
+// 오디오 클립 반복 재생
+// ─────────────────────────────────────────────────────────────
+
+/**
+ * 오디오 클립의 반복 재생을 켜고 끈다.
+ * 켜면 시작 위치를 0으로 고정하고(렌더러가 -ss 없이 파일 처음부터 읽는다),
+ * 클립 길이를 영상 끝까지 늘려 음악이 짧아도 채워지게 한다.
+ */
+function setClipLoop(clip, enabled) {
+    clip.loop = (enabled === true);
+    if (clip.loop) {
+        clip.sourceStart = 0;
+        const asset = STATE.assets.find(a => a.id === clip.assetId);
+        const sourceDur = (asset && asset.duration > 0) ? asset.duration
+            : (clip.sourceEnd > 0 ? clip.sourceEnd : clip.duration);
+        clip.sourceEnd = parseFloat(sourceDur.toFixed(2));
+
+        // 자기 자신을 제외한 나머지 콘텐츠가 끝나는 지점까지 늘린다
+        let othersEnd = 0;
+        STATE.clips.forEach(c => {
+            if (c.id === clip.id) return;
+            const end = c.timelineStart + c.duration;
+            if (end > othersEnd) othersEnd = end;
+        });
+        if (othersEnd > clip.timelineStart + 0.1) {
+            clip.duration = parseFloat((othersEnd - clip.timelineStart).toFixed(2));
+        }
+    } else {
+        clip.duration = parseFloat(Math.min(clip.sourceEnd || clip.duration, clip.duration).toFixed(2));
+    }
+}
+
+// ─────────────────────────────────────────────────────────────
+// 무료 음악 검색 (Openverse CC0 / 퍼블릭 도메인)
+// ─────────────────────────────────────────────────────────────
+const musicState = {
+    lastQuery: '',
+    results: [],
+    previewAudio: null,     // activePlayers 에 넣지 않는다 (타임라인 동기화가 미리듣기를 멈춘다)
+    previewId: null,
+    busy: false,
+    serverReady: true,      // 서버가 음악 API 를 지원하는지 (옛 코드로 떠 있으면 false)
+};
+
+function openMusicSearchModal() {
+    if (!DOM.musicSearchModal) return;
+    DOM.musicSearchModal.classList.remove('hide');
+    DOM.musicSearchModal.classList.add('show');
+    // 서버가 살아 있는지만으로는 부족하다 — 프로세스가 옛 코드로 떠 있으면 /api/music/* 가 404 다.
+    // loadMusicKeywords 가 keywords 호출로 두 가지를 한 번에 확인한다.
+    checkServerHealth().then(ok => {
+        if (!ok) {
+            setMusicServerReady(false, '로컬 서버가 실행 중일 때만 음악 검색을 사용할 수 있습니다. (BGM/스티커 버튼으로 직접 추가는 가능합니다)');
+            return;
+        }
+        loadMusicKeywords();
+    });
+    if (DOM.musicSearchInput) DOM.musicSearchInput.focus();
+}
+
+function closeMusicSearchModal() {
+    stopMusicPreview();
+    if (!DOM.musicSearchModal) return;
+    DOM.musicSearchModal.classList.remove('show');
+    setTimeout(() => DOM.musicSearchModal && DOM.musicSearchModal.classList.add('hide'), 250);
+}
+
+/**
+ * 음악 API 사용 가능 여부에 따라 경고와 입력 잠금을 갱신한다.
+ * @param {boolean} ready
+ * @param {string} [message] 준비되지 않았을 때 보여줄 안내 (생략하면 기존 문구 유지)
+ */
+function setMusicServerReady(ready, message) {
+    musicState.serverReady = ready;
+    if (DOM.musicServerWarning) {
+        if (message) {
+            const span = DOM.musicServerWarning.querySelector('span');
+            if (span) span.textContent = message;
+        }
+        DOM.musicServerWarning.classList.toggle('hide', ready);
+    }
+    if (DOM.btnMusicSearchRun) DOM.btnMusicSearchRun.disabled = !ready;
+    if (DOM.musicSearchInput) DOM.musicSearchInput.disabled = !ready;
+    if (!ready && message) setMusicStatus(message, 'error');
+}
+
+async function loadMusicKeywords() {
+    if (!DOM.musicKeywordChips) return;
+    try {
+        const res = await fetch('/api/music/keywords', { cache: 'no-store' });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+
+        DOM.musicKeywordChips.innerHTML = '';
+        (data.keywords || []).forEach(kw => {
+            const chip = document.createElement('button');
+            chip.type = 'button';
+            chip.className = 'music-chip';
+            chip.textContent = `${kw.ko} (${kw.en})`;
+            chip.addEventListener('click', () => {
+                if (DOM.musicSearchInput) DOM.musicSearchInput.value = kw.en;
+                runMusicSearch();
+            });
+            DOM.musicKeywordChips.appendChild(chip);
+        });
+        DOM.musicKeywordChips.dataset.loaded = '1';
+        setMusicServerReady(true);
+    } catch (e) {
+        // 서버는 살아 있어도 옛 코드로 실행 중이면 이 API 가 없다 (재시작 필요)
+        setMusicServerReady(false, '로컬 서버가 예전 코드로 실행 중입니다. LookVideoEditor 서버(8090)를 재시작한 뒤 브라우저를 새로고침해 주세요.');
+    }
+}
+
+function setMusicStatus(message, kind = '') {
+    if (!DOM.musicStatus) return;
+    DOM.musicStatus.textContent = message || '';
+    DOM.musicStatus.className = 'music-status' + (kind ? ' ' + kind : '');
+}
+
+async function runMusicSearch() {
+    if (musicState.busy) return;
+    const query = DOM.musicSearchInput ? DOM.musicSearchInput.value.trim() : '';
+    if (!query) {
+        setMusicStatus('검색어를 입력해 주세요.', 'error');
+        return;
+    }
+
+    stopMusicPreview();
+    musicState.busy = true;
+    musicState.lastQuery = query;
+    setMusicStatus('검색 중…');
+    if (DOM.btnMusicSearchRun) DOM.btnMusicSearchRun.disabled = true;
+
+    try {
+        const selected = DOM.musicFilterDuration ? DOM.musicFilterDuration.value : '';
+        const params = new URLSearchParams({ q: query });
+        if (selected) {
+            const [min, max] = selected.split('-');
+            params.set('min_duration', min);
+            params.set('max_duration', max);
+        }
+
+        const res = await fetch(`/api/music/search?${params.toString()}`, { cache: 'no-store' });
+        const raw = await res.text();
+        let data = null;
+        try { data = JSON.parse(raw); } catch (e) { data = null; }
+
+        if (!data) {
+            // JSON 이 아니면 이 API 를 모르는 서버(옛 코드로 실행 중)이거나 응답이 깨진 경우다
+            musicState.results = [];
+            renderMusicResults();
+            if (res.status === 404) {
+                setMusicServerReady(false, '로컬 서버가 예전 코드로 실행 중입니다. LookVideoEditor 서버(8090)를 재시작한 뒤 브라우저를 새로고침해 주세요.');
+            } else {
+                setMusicStatus(`검색에 실패했습니다. (HTTP ${res.status})`, 'error');
+            }
+            return;
+        }
+
+        if (!res.ok || data.success === false) {
+            musicState.results = [];
+            renderMusicResults();
+            setMusicStatus(data.message || `검색에 실패했습니다. (${res.status})`, 'error');
+            return;
+        }
+
+        musicState.results = data.results || [];
+        renderMusicResults();
+
+        // 변환 힌트
+        if (DOM.musicTranslateHint) {
+            const q = data.query || {};
+            if (q.wasTranslated && q.translated) {
+                DOM.musicTranslateHint.innerHTML = `검색어 변환: <strong>${escapeHtml(q.original)}</strong> → <strong>${escapeHtml(q.translated)}</strong>`;
+                DOM.musicTranslateHint.classList.remove('hide');
+            } else if (q.failed) {
+                DOM.musicTranslateHint.innerHTML = `한국어 검색어를 영어로 바꾸지 못했습니다. <strong>calm, lofi, piano</strong> 처럼 영어로 입력해 보세요.`;
+                DOM.musicTranslateHint.classList.remove('hide');
+            } else {
+                DOM.musicTranslateHint.classList.add('hide');
+            }
+        }
+
+        if (DOM.musicResultCount) {
+            const rl = data.rateLimit || {};
+            const remain = (rl.dailyRemaining !== undefined && rl.dailyRemaining !== null)
+                ? ` · 오늘 남은 검색 ${rl.dailyRemaining}회` : '';
+            DOM.musicResultCount.textContent = `결과 ${musicState.results.length}건 / 전체 ${data.resultCount || 0}건${remain}`;
+        }
+        setMusicStatus(musicState.results.length === 0
+            ? '검색 결과가 없습니다. 다른 키워드로 시도해 보세요.'
+            : '▶ 를 눌러 들어본 뒤 [트랙에 추가] 하세요. 모두 CC0/퍼블릭 도메인이라 출처 표시 의무가 없습니다.');
+    } catch (e) {
+        musicState.results = [];
+        renderMusicResults();
+        setMusicStatus('검색 중 오류가 발생했습니다. 로컬 서버와 인터넷 연결을 확인해 주세요.', 'error');
+    } finally {
+        musicState.busy = false;
+        // 서버가 옛 코드면 다시 잠가둔 상태를 유지한다 (여기서 무조건 풀면 안 된다)
+        if (DOM.btnMusicSearchRun) DOM.btnMusicSearchRun.disabled = !musicState.serverReady;
+    }
+}
+
+function renderMusicResults() {
+    if (!DOM.musicResultList) return;
+    DOM.musicResultList.innerHTML = '';
+
+    if (musicState.results.length === 0) {
+        DOM.musicResultList.innerHTML = '<li class="empty-list-msg">표시할 결과가 없습니다.</li>';
+        return;
+    }
+
+    musicState.results.forEach(item => {
+        const li = document.createElement('li');
+        li.className = 'music-result-item';
+        li.dataset.musicId = item.id;
+
+        const licenseLabel = item.license === 'pdm' ? 'Public Domain' : 'CC0 1.0';
+        const sourceLink = item.landingUrl
+            ? `<a href="${escapeHtml(item.landingUrl)}" target="_blank" rel="noopener noreferrer">${escapeHtml(item.provider || '원본')} ↗</a>`
+            : '';
+        const licenseLink = item.licenseUrl
+            ? `<a href="${escapeHtml(item.licenseUrl)}" target="_blank" rel="noopener noreferrer">라이선스 ↗</a>`
+            : '';
+
+        li.innerHTML = `
+            <button class="music-play-btn" type="button" title="들어보기"><i class="fa-solid fa-play"></i></button>
+            <div class="music-info">
+                <div class="music-title">${escapeHtml(item.title)}</div>
+                <div class="music-meta">
+                    <span>${escapeHtml(item.creator || '크리에이터 미상')}</span>
+                    <span class="music-badge">${licenseLabel}</span>
+                    <span>${escapeHtml(item.filetype.toUpperCase())}</span>
+                    ${sourceLink}
+                    ${licenseLink}
+                </div>
+            </div>
+            <span class="music-duration">${formatTimeShort(item.durationSec)}</span>
+            <button class="btn btn-sm btn-primary music-add-btn" type="button">
+                <i class="fa-solid fa-plus"></i> 트랙에 추가
+            </button>
+        `;
+
+        li.querySelector('.music-play-btn').addEventListener('click', () => toggleMusicPreview(item));
+        li.querySelector('.music-add-btn').addEventListener('click', (e) => addMusicToTimeline(item, e.currentTarget));
+        DOM.musicResultList.appendChild(li);
+    });
+}
+
+function toggleMusicPreview(item) {
+    if (musicState.previewId === item.id) {
+        stopMusicPreview();
+        return;
+    }
+    stopMusicPreview();
+    if (!item.previewUrl) return;
+
+    if (!musicState.previewAudio) {
+        musicState.previewAudio = new Audio();
+        musicState.previewAudio.preload = 'none';
+        musicState.previewAudio.addEventListener('ended', () => {
+            musicState.previewId = null;
+            updateMusicPreviewUI();
+        });
+    }
+    musicState.previewAudio.src = item.previewUrl;
+    musicState.previewId = item.id;
+    musicState.previewAudio.play().catch(() => {
+        setMusicStatus('미리듣기를 재생할 수 없습니다. 트랙에 추가한 뒤 타임라인에서 들어보세요.', 'error');
+        musicState.previewId = null;
+        updateMusicPreviewUI();
+    });
+    updateMusicPreviewUI();
+    setMusicStatus(`미리듣기: ${item.title}`);
+}
+
+function stopMusicPreview() {
+    if (musicState.previewAudio) {
+        try {
+            musicState.previewAudio.pause();
+            musicState.previewAudio.src = '';
+        } catch (e) {}
+    }
+    if (musicState.previewId === null) return;
+    musicState.previewId = null;
+    updateMusicPreviewUI();
+}
+
+function updateMusicPreviewUI() {
+    if (!DOM.musicResultList) return;
+    DOM.musicResultList.querySelectorAll('.music-result-item').forEach(li => {
+        const playing = li.dataset.musicId === musicState.previewId;
+        li.classList.toggle('playing', playing);
+        const icon = li.querySelector('.music-play-btn i');
+        if (icon) icon.className = playing ? 'fa-solid fa-stop' : 'fa-solid fa-play';
+    });
+}
+
+async function addMusicToTimeline(item, btn) {
+    if (!btn || btn.disabled) return;
+    const originalHtml = btn.innerHTML;
+    btn.disabled = true;
+    btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> 받는 중…';
+    setMusicStatus(`'${item.title}' 내려받는 중…`);
+
+    try {
+        const res = await fetch('/api/music/download', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ id: item.id }),   // id 만 보낸다 (URL 은 서버가 재조회)
+        });
+        const data = await res.json();
+
+        if (!res.ok || data.success === false) {
+            setMusicStatus(data.message || '음악을 추가하지 못했습니다.', 'error');
+            btn.disabled = false;
+            btn.innerHTML = originalHtml;
+            return;
+        }
+
+        // 같은 파일이 이미 라이브러리에 있으면 재사용
+        let asset = STATE.assets.find(a => a.localPath && data.localPath
+            && a.localPath.toLowerCase() === data.localPath.toLowerCase());
+
+        if (!asset) {
+            asset = {
+                id: 'asset_' + Date.now() + '_' + Math.random().toString(36).substr(2, 5),
+                name: data.filename,
+                type: 'audio',
+                duration: data.durationSec || 5.0,
+                url: data.url,
+                file: null,               // file:null → 서버 업로드 자동 스킵
+                localPath: data.localPath,
+                musicMeta: {
+                    title: data.title, creator: data.creator, license: data.license,
+                    licenseUrl: data.licenseUrl, landingUrl: data.landingUrl,
+                },
+            };
+            STATE.assets.push(asset);
+        }
+
+        createHiddenPlayerForAsset(asset);
+        updateAssetListUI();
+
+        // 오디오 레인의 빈 지점부터 배치
+        const start = findFreeAudioStart();
+        addAssetToTimeline(asset.id, 'audio', start);
+
+        // 음악이 영상보다 짧으면 자동 반복
+        const wantLoop = DOM.musicLoopIfShort ? DOM.musicLoopIfShort.checked : true;
+        const clip = STATE.clips.find(c => c.id === STATE.selectedClipId);
+        if (wantLoop && clip && clip.assetId === asset.id) {
+            let othersEnd = 0;
+            STATE.clips.forEach(c => {
+                if (c.id === clip.id) return;
+                const end = c.timelineStart + c.duration;
+                if (end > othersEnd) othersEnd = end;
+            });
+            if (othersEnd > clip.timelineStart + 0.1) setClipLoop(clip, true);
+        }
+
+        updateTimelineClipsUI();
+        recalculateTotalDuration();
+        renderPreview();
+
+        btn.innerHTML = '<i class="fa-solid fa-check"></i> 담김';
+        setMusicStatus(`'${data.title}' 을(를) 오디오 트랙에 추가했습니다.${data.reused ? ' (이미 받아둔 파일 재사용)' : ''}`, 'success');
+    } catch (e) {
+        setMusicStatus('음악을 추가하지 못했습니다. 로컬 서버 상태를 확인해 주세요.', 'error');
+        btn.disabled = false;
+        btn.innerHTML = originalHtml;
+    }
+}
+
+/** 오디오 트랙에서 아직 쓰이지 않은 뒤쪽 지점을 찾는다 (클립 겹침 방지) */
+function findFreeAudioStart() {
+    let end = 0;
+    STATE.clips.forEach(c => {
+        if (c.track !== 'audio') return;
+        const clipEnd = c.timelineStart + c.duration;
+        if (clipEnd > end) end = clipEnd;
+    });
+    return parseFloat(end.toFixed(2));
 }

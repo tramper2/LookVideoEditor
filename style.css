@@ -164,6 +164,7 @@ body {
     font-size: 0.75rem;
     color: var(--text-muted);
     font-weight: 500;
+    white-space: nowrap;      /* "해상도" 가 "해상/도" 로 쪼개지는 것 방지 */
 }
 
 .setting-field select {
@@ -191,21 +192,30 @@ body {
 
 /* Button Component Styles */
 .btn {
-    padding: 8px 14px;
+    padding: 7px 11px;
     border-radius: 6px;
-    font-size: 0.8rem;
+    font-size: 0.76rem;
     font-weight: 500;
     cursor: pointer;
     border: 1px solid transparent;
     display: inline-flex;
     align-items: center;
     gap: 6px;
+    /* 한국어는 글자 단위 줄바꿈이 허용돼 좁아지면 한 글자씩 쪼개진다.
+       inline-flex 의 min-content 가 "가장 넓은 한글 1글자"가 되므로 반드시 nowrap 이 필요하다. */
+    white-space: nowrap;
     transition: all 0.2s ease;
 }
 
 .btn-sm {
-    padding: 4px 10px;
-    font-size: 0.72rem;
+    padding: 4px 8px;
+    font-size: 0.7rem;
+    border-radius: 4px;
+}
+
+.btn-xs {
+    padding: 3px 8px;
+    font-size: 0.68rem;
     border-radius: 4px;
 }
 
@@ -259,6 +269,17 @@ body {
 .btn-danger:hover {
     background: var(--danger);
     color: white;
+}
+
+.btn-success {
+    background: rgba(0, 230, 118, 0.15);
+    border-color: rgba(0, 230, 118, 0.35);
+    color: var(--success);
+}
+
+.btn-success:hover {
+    background: var(--success);
+    color: #0c0c0e;
 }
 
 .btn-outline {
@@ -344,8 +365,21 @@ body {
 .asset-list-header {
     display: flex;
     align-items: center;
-    justify-content: space-between;
+    flex-wrap: wrap;             /* 좁은 패널에서 버튼이 아랫줄로 내려가게 (압축 금지) */
+    gap: 8px;
     margin-bottom: 10px;
+}
+
+.asset-list-header h3 {
+    margin-bottom: 0;
+}
+
+/* 버튼들을 묶어 한 덩어리로 만든다 — 좁으면 두 버튼이 함께 아랫줄로 내려간다 */
+.asset-header-actions {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-left: auto;
 }
 
 .asset-list-header h3,
@@ -357,6 +391,7 @@ body {
     text-transform: uppercase;
     letter-spacing: 0.5px;
     margin-bottom: 10px;
+    white-space: nowrap;
     display: flex;
     align-items: center;
     gap: 6px;
@@ -1241,6 +1276,7 @@ body.resizing-row {
     border-top: 1px solid var(--border-color);
     display: flex;
     justify-content: flex-end;
+    flex-wrap: wrap;              /* 버튼이 많으면 압축하지 말고 줄바꿈 (렌더 모달은 6개) */
     gap: 10px;
 }
 
@@ -1451,6 +1487,8 @@ body.resizing-row {
     display: flex;
     align-items: center;
     justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 8px;
     margin-bottom: 10px;
 }
 
@@ -1460,6 +1498,7 @@ body.resizing-row {
     letter-spacing: 0.4px;
     text-transform: uppercase;
     color: var(--text-muted);
+    white-space: nowrap;
 }
 
 .reels-header h3 i {
@@ -2035,6 +2074,9 @@ body.resizing-row {
     border: 1px solid rgba(0, 230, 118, 0.5);
     color: #00e676;
     height: 32px;
+    /* .btn-icon 과 함께 쓰이므로 width:32px 을 반드시 덮어야 한다.
+       그대로 두면 padding 24px 를 뺀 콘텐츠 폭이 8px 밖에 안 남아 글자가 세로로 쌓인다. */
+    width: auto;
     padding: 0 12px;
     border-radius: 6px;
     display: flex;
@@ -2043,6 +2085,7 @@ body.resizing-row {
     cursor: pointer;
     font-size: 12px;
     font-weight: 600;
+    white-space: nowrap;
     transition: all 0.2s ease;
 }
 
@@ -2174,4 +2217,243 @@ body.resizing-row {
 /* 소형 모달 */
 .modal-sm {
     max-width: 440px !important;
+}
+
+/* ── 무료 음악 검색 모달 ─────────────────────────────────── */
+.music-modal-content {
+    max-width: 760px;
+    width: 92%;
+    display: flex;
+    flex-direction: column;
+    max-height: 86vh;
+}
+
+.music-modal-body {
+    padding: 16px 20px;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.music-search-bar {
+    display: flex;
+    gap: 8px;
+}
+
+.music-input {
+    flex: 1;
+    min-width: 0;
+    padding: 10px 12px;
+    font-size: 0.9rem;
+    background: rgba(0, 0, 0, 0.35);
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    color: var(--text-main, #e2e8f0);
+    outline: none;
+}
+
+.music-input:focus {
+    border-color: var(--primary);
+    box-shadow: 0 0 0 2px rgba(255, 65, 108, 0.15);
+}
+
+.music-hint {
+    font-size: 0.72rem;
+    color: var(--text-muted);
+    line-height: 1.5;
+    margin-top: 6px;
+}
+
+.music-hint strong {
+    color: var(--accent);
+    font-weight: 600;
+}
+
+.music-chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+}
+
+.music-chip {
+    background: rgba(255, 255, 255, 0.05);
+    border: 1px solid var(--border-color);
+    color: var(--text-muted);
+    padding: 4px 10px;
+    border-radius: 999px;
+    font-size: 0.75rem;
+    cursor: pointer;
+    transition: all 0.15s ease;
+}
+
+.music-chip:hover {
+    background: rgba(255, 65, 108, 0.12);
+    border-color: var(--primary);
+    color: var(--text-main, #e2e8f0);
+}
+
+.music-filters {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    flex-wrap: wrap;
+    padding: 8px 0;
+    border-top: 1px solid var(--border-color);
+    border-bottom: 1px solid var(--border-color);
+}
+
+.music-select {
+    background: rgba(0, 0, 0, 0.35);
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    color: var(--text-main, #e2e8f0);
+    padding: 5px 8px;
+    font-size: 0.78rem;
+    cursor: pointer;
+}
+
+.music-count {
+    margin-left: auto;
+    font-size: 0.72rem;
+    color: var(--text-muted);
+}
+
+.music-result-list {
+    list-style: none;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    margin: 0;
+    padding: 0;
+}
+
+.music-result-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 9px 10px;
+    background: rgba(255, 255, 255, 0.03);
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    transition: background 0.15s ease;
+}
+
+.music-result-item:hover {
+    background: rgba(255, 255, 255, 0.06);
+}
+
+.music-result-item.playing {
+    border-color: var(--accent);
+    background: rgba(0, 229, 255, 0.07);
+}
+
+.music-play-btn {
+    flex: 0 0 auto;
+    width: 34px;
+    height: 34px;
+    border-radius: 50%;
+    border: 1px solid var(--border-color);
+    background: rgba(0, 0, 0, 0.35);
+    color: var(--text-main, #e2e8f0);
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 0.8rem;
+    transition: all 0.15s ease;
+}
+
+.music-play-btn:hover {
+    border-color: var(--accent);
+    color: var(--accent);
+}
+
+.music-result-item.playing .music-play-btn {
+    background: var(--accent);
+    color: #0c0c0e;
+    border-color: var(--accent);
+}
+
+.music-info {
+    flex: 1;
+    min-width: 0;
+}
+
+.music-title {
+    font-size: 0.84rem;
+    font-weight: 600;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.music-meta {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
+    font-size: 0.7rem;
+    color: var(--text-muted);
+    margin-top: 3px;
+}
+
+.music-meta a {
+    color: var(--text-muted);
+    text-decoration: none;
+    border-bottom: 1px dotted rgba(255, 255, 255, 0.2);
+}
+
+.music-meta a:hover {
+    color: var(--accent);
+}
+
+.music-badge {
+    display: inline-block;
+    padding: 1px 6px;
+    border-radius: 4px;
+    font-size: 0.62rem;
+    font-weight: 700;
+    letter-spacing: 0.02em;
+    background: rgba(0, 230, 118, 0.15);
+    color: var(--success);
+    border: 1px solid rgba(0, 230, 118, 0.3);
+}
+
+.music-duration {
+    flex: 0 0 auto;
+    font-size: 0.72rem;
+    color: var(--text-muted);
+    font-family: monospace;
+}
+
+.music-add-btn {
+    flex: 0 0 auto;
+}
+
+.music-status {
+    font-size: 0.75rem;
+    color: var(--text-muted);
+    min-height: 1.1em;
+    line-height: 1.5;
+}
+
+.music-status.error {
+    color: var(--danger);
+}
+
+.music-status.success {
+    color: var(--success);
+}
+
+/* 타임라인 클립의 반복 재생 배지 */
+.clip-loop-badge {
+    font-size: 0.55rem;
+    font-weight: 700;
+    background: rgba(0, 0, 0, 0.6);
+    color: var(--accent);
+    padding: 1px 4px;
+    border-radius: 3px;
+    margin-left: 4px;
+    pointer-events: none;
 }

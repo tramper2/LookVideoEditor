@@ -12,7 +12,7 @@
     <link rel="icon" type="image/x-icon" href="favicon.ico">
     <!-- FontAwesome for icons -->
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
-    <link rel="stylesheet" href="style.css?v=2.1.0">
+    <link rel="stylesheet" href="style.css?v=2.2.4">
 </head>
 <body>
     <div class="app-container">
@@ -138,9 +138,14 @@
                     <div class="asset-list-container">
                         <div class="asset-list-header">
                             <h3>가져온 미디어 목록</h3>
-                            <button id="btn-add-bgm-sticker" class="btn btn-sm btn-outline" title="BGM(오디오) 또는 스티커 이미지(PNG/JPG) 파일 추가">
-                                <i class="fa-solid fa-plus"></i> BGM/스티커
-                            </button>
+                            <div class="asset-header-actions">
+                                <button id="btn-add-bgm-sticker" class="btn btn-xs btn-outline" title="BGM(오디오) 또는 스티커 이미지(PNG/JPG) 파일 추가">
+                                    <i class="fa-solid fa-plus"></i> BGM/스티커
+                                </button>
+                                <button id="btn-search-music" class="btn btn-xs btn-primary" title="무료 음악(CC0/퍼블릭 도메인)을 검색해서 바로 트랙에 추가">
+                                    <i class="fa-solid fa-magnifying-glass"></i> 음악 검색
+                                </button>
+                            </div>
                         </div>
                         <ul id="asset-list" class="asset-list">
                             <!-- JS를 통해 동적 생성 -->
@@ -364,6 +369,13 @@
                             <div class="property-group">
                                 <label>배경음악 볼륨 조절 (<span id="prop-audio-volume-label">100</span>%)</label>
                                 <input type="range" id="prop-audio-volume" min="0" max="2" step="0.1" value="1">
+                            </div>
+                            <div class="property-group">
+                                <label class="webp-checkbox-row">
+                                    <input type="checkbox" id="prop-audio-loop">
+                                    <span><strong>반복 재생 (루프)</strong></span>
+                                </label>
+                                <div class="music-hint">음악이 짧아도 클립 길이만큼 반복 재생합니다. (반복 시 시작 위치는 0초로 고정)</div>
                             </div>
                         </div>
 
@@ -819,6 +831,58 @@
         </div>
     </div>
 
+    <!-- 무료 음악 검색 모달 (Openverse CC0 / 퍼블릭 도메인) -->
+    <div id="music-search-modal" class="modal-overlay hide">
+        <div class="modal-content music-modal-content">
+            <div class="modal-header">
+                <h3><i class="fa-solid fa-music"></i> 무료 음악 검색</h3>
+                <button class="modal-close-btn" id="btn-close-music-modal" title="닫기">&times;</button>
+            </div>
+            <div class="modal-body music-modal-body">
+                <div id="music-server-warning" class="highlight-group hide">
+                    <i class="fa-solid fa-triangle-exclamation"></i>
+                    <span>로컬 서버가 실행 중일 때만 음악 검색을 사용할 수 있습니다. (BGM/스티커 버튼으로 직접 추가는 가능합니다)</span>
+                </div>
+                <div class="highlight-group">
+                    <i class="fa-solid fa-circle-info"></i>
+                    <span>저작권 제약이 없는 <strong>CC0 · 퍼블릭 도메인</strong> 음악만 검색합니다. 출처: Openverse (Freesound 등)</span>
+                </div>
+
+                <div class="music-search-bar">
+                    <input type="text" id="music-search-input" class="music-input"
+                           placeholder="예: 잔잔한 피아노, 카페 브이로그, calm piano">
+                    <button id="btn-music-search-run" class="btn btn-primary">
+                        <i class="fa-solid fa-magnifying-glass"></i> 검색
+                    </button>
+                </div>
+                <div id="music-translate-hint" class="music-hint hide"></div>
+                <div id="music-keyword-chips" class="music-chips"></div>
+
+                <div class="music-filters">
+                    <select id="music-filter-duration" class="music-select">
+                        <option value="">길이 전체</option>
+                        <option value="0-60">1분 이하</option>
+                        <option value="30-180" selected>30초 ~ 3분</option>
+                        <option value="60-600">1분 이상</option>
+                    </select>
+                    <label class="webp-checkbox-row">
+                        <input type="checkbox" id="music-loop-if-short" checked>
+                        <span>음악이 짧으면 자동 반복</span>
+                    </label>
+                    <span id="music-result-count" class="music-count"></span>
+                </div>
+
+                <ul id="music-result-list" class="music-result-list">
+                    <li class="empty-list-msg">검색어를 입력하거나 아래 분위기 버튼을 눌러 주세요.</li>
+                </ul>
+                <div id="music-status" class="music-status"></div>
+            </div>
+            <div class="modal-footer">
+                <button id="btn-close-music-modal-footer" class="btn btn-secondary">닫기</button>
+            </div>
+        </div>
+    </div>
+
     <!-- 사진 추출 완료 토스트 알림 -->
     <div id="photo-extract-toast" class="photo-extract-toast hide">
         <div class="toast-thumb-wrap">
@@ -836,8 +900,8 @@
     </div>
 
     <!-- 로직 스크립트 불러오기 -->
-    <script src="ffmpeg-generator.js?v=2.2.0"></script>
-    <script src="app.js?v=2.2.0"></script>
+    <script src="ffmpeg-generator.js?v=2.2.4"></script>
+    <script src="app.js?v=2.2.4"></script>
 </body>
 </html>
 
