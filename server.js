@@ -10,6 +10,7 @@ const fs = require('fs');
 const path = require('path');
 const { spawn, exec } = require('child_process');
 const { exportWebp, cleanupAllPending, cleanupOrphanTemps } = require('./webp-exporter');
+const { translateQuery, searchMusic, downloadMusic, getQuickKeywords, getRateLimitInfo } = require('./music-search');
 
 // WebP 중간본/프로브 임시 폴더 위치
 const WEBP_TEMP_ROOT = path.join(__dirname, 'temp');
@@ -594,6 +595,71 @@ const server = http.createServer(async (req, res) => {
         return;
     }
 
+    // 3-1. 무료 음악 검색 관련 (Openverse CC0/퍼블릭 도메인)
+    //      브라우저가 직접 외부 API 를 부르지 않고 이 서버를 거치게 해서
+    //      레이트 리밋(분당 20회)을 한 곳에서 지키고 에러 처리를 통일한다.
+    if (pathname === '/api/music/keywords' && req.method === 'GET') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ keywords: getQuickKeywords(), rateLimit: getRateLimitInfo() }));
+        return;
+    }
+
+    if (pathname === '/api/music/search' && req.method === 'GET') {
+        const q = parsedUrl.searchParams.get('q') || '';
+        const page = parseInt(parsedUrl.searchParams.get('page'), 10) || 1;
+        const minDurationSec = parseFloat(parsedUrl.searchParams.get('min_duration')) || 0;
+        const maxDurationSec = parseFloat(parsedUrl.searchParams.get('max_duration')) || 0;
+
+        searchMusic({ q, page, minDurationSec, maxDurationSec })
+            .then(data => {
+                res.writeHead(200, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ success: true, ...data }));
+            })
+            .catch(err => {
+                console.warn(`[LookVideoEditor] 음악 검색 실패 (${err.code || 'unknown'}): ${err.message}`);
+                res.writeHead(err.status || 500, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({
+                    success: false,
+                    error: err.code || 'unknown',
+                    message: err.message,
+                }));
+            });
+        return;
+    }
+
+    if (pathname === '/api/music/download' && req.method === 'POST') {
+        let body = '';
+        req.on('data', chunk => { body += chunk; });
+        req.on('end', () => {
+            let id = '';
+            try {
+                id = JSON.parse(body).id;      // 클라이언트는 id 만 보낸다 (URL 은 서버가 재조회)
+            } catch (e) {
+                res.writeHead(400, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ success: false, error: 'invalid_body', message: '요청 형식이 올바르지 않습니다.' }));
+                return;
+            }
+
+            const sourceDir = path.join(ROOT_DIR, 'source');
+            downloadMusic({ id, sourceDir })
+                .then(result => {
+                    console.log(`[LookVideoEditor] 음악 저장 완료: ${result.filename} (${Math.round(result.bytes / 1024)}KB, ${result.durationSec.toFixed(1)}초)`);
+                    res.writeHead(200, { 'Content-Type': 'application/json' });
+                    res.end(JSON.stringify(result));
+                })
+                .catch(err => {
+                    console.warn(`[LookVideoEditor] 음악 다운로드 실패 (${err.code || 'unknown'}): ${err.message}`);
+                    res.writeHead(err.status || 500, { 'Content-Type': 'application/json' });
+                    res.end(JSON.stringify({
+                        success: false,
+                        error: err.code || 'unknown',
+                        message: err.message,
+                    }));
+                });
+        });
+        return;
+    }
+
     // 4. 렌더링 시작
     if (pathname === '/api/render' && req.method === 'POST') {
         if (renderState.isRendering) {
@@ -662,6 +728,9 @@ const server = http.createServer(async (req, res) => {
 
                     const args = ['-y'];
                     rawInputs.forEach(inp => {
+                        // 반복 재생: -stream_loop 는 -i 앞에 오는 입력 옵션이어야 한다.
+                        // 유한 횟수(loop)를 쓰므로 -t 가 어떤 이유로 무시돼도 무한 읽기가 되지 않는다.
+                        if (inp.loop > 0) args.push('-stream_loop', String(inp.loop));
                         if (inp.ss) args.push('-ss', inp.ss);
                         if (inp.t) args.push('-t', inp.t);
                         args.push('-i', inp.path);
