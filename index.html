@@ -12,7 +12,7 @@
     <link rel="icon" type="image/x-icon" href="favicon.ico">
     <!-- FontAwesome for icons -->
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
-    <link rel="stylesheet" href="style.css?v=2.2.4">
+    <link rel="stylesheet" href="style.css?v=2.2.9">
 </head>
 <body>
     <div class="app-container">
@@ -81,8 +81,8 @@
                     <h2><i class="fa-solid fa-photo-film"></i> 미디어 라이브러리</h2>
                 </div>
                 <div class="panel-body">
-                    <!-- BGM/스티커 파일 추가용 숨김 input (영상은 릴스 폴더 선택으로 로드) -->
-                    <input type="file" id="input-media" multiple accept="audio/*,image/png,image/jpeg" style="display:none;">
+                    <!-- 이미지/음악 파일 추가용 숨김 input (영상은 릴스 폴더 선택으로 로드) -->
+                    <input type="file" id="input-media" multiple accept="audio/*,image/png,image/jpeg,image/webp,image/gif,image/bmp" style="display:none;">
                     <!-- 외부 비디오 파일 브라우저 fallback 선택용 숨김 input -->
                     <input type="file" id="input-external-video-files" multiple accept="video/mp4,video/quicktime,video/webm,video/x-msvideo,video/x-matroska,video/*" style="display:none;">
 
@@ -139,8 +139,8 @@
                         <div class="asset-list-header">
                             <h3>가져온 미디어 목록</h3>
                             <div class="asset-header-actions">
-                                <button id="btn-add-bgm-sticker" class="btn btn-xs btn-outline" title="BGM(오디오) 또는 스티커 이미지(PNG/JPG) 파일 추가">
-                                    <i class="fa-solid fa-plus"></i> BGM/스티커
+                                <button id="btn-add-bgm-sticker" class="btn btn-xs btn-outline" title="이미지(PNG/JPG/WebP/GIF/BMP) 또는 음악 파일 추가 — 탐색기에서 끌어다 놓아도 됩니다">
+                                    <i class="fa-solid fa-plus"></i> 이미지/음악
                                 </button>
                                 <button id="btn-search-music" class="btn btn-xs btn-primary" title="무료 음악(CC0/퍼블릭 도메인)을 검색해서 바로 트랙에 추가">
                                     <i class="fa-solid fa-magnifying-glass"></i> 음악 검색
@@ -200,6 +200,12 @@
                     </div>
                     <div class="preview-canvas-wrapper" id="preview-canvas-wrapper">
                         <canvas id="preview-canvas" width="1920" height="1080"></canvas>
+                        <!-- 프리뷰 확대 배율 (확대 중일 때만 보이며, 클릭하면 원래 크기로) -->
+                        <div class="preview-zoom-badge" id="preview-zoom-badge" title="클릭하면 원래 크기로 (캔버스 더블클릭도 동일)">
+                            <i class="fa-solid fa-magnifying-glass-plus"></i>
+                            <span id="preview-zoom-text">100%</span>
+                            <span class="preview-zoom-reset"><i class="fa-solid fa-rotate-left"></i></span>
+                        </div>
                         <!-- 셔터 플래시 이펙트 -->
                         <div id="shutter-flash" class="shutter-flash hide"></div>
                         <!-- 로딩/인디케이터 오버레이 -->
@@ -841,7 +847,7 @@
             <div class="modal-body music-modal-body">
                 <div id="music-server-warning" class="highlight-group hide">
                     <i class="fa-solid fa-triangle-exclamation"></i>
-                    <span>로컬 서버가 실행 중일 때만 음악 검색을 사용할 수 있습니다. (BGM/스티커 버튼으로 직접 추가는 가능합니다)</span>
+                    <span>로컬 서버가 실행 중일 때만 음악 검색을 사용할 수 있습니다. (이미지/음악 버튼으로 직접 추가는 가능합니다)</span>
                 </div>
                 <div class="highlight-group">
                     <i class="fa-solid fa-circle-info"></i>
@@ -900,8 +906,8 @@
     </div>
 
     <!-- 로직 스크립트 불러오기 -->
-    <script src="ffmpeg-generator.js?v=2.2.4"></script>
-    <script src="app.js?v=2.2.4"></script>
+    <script src="ffmpeg-generator.js?v=2.2.9"></script>
+    <script src="app.js?v=2.2.9"></script>
 </body>
 </html>
 

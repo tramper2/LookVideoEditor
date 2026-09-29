@@ -22,6 +22,64 @@ function getAudioTempoFilter(speed) {
     return filters.join(",");
 }
 
+/**
+ * Video Track 1 에서 시간상 인접한 두 클립의 겹침을 "암시적 크로스디졸브" 구간으로 해석한다.
+ *
+ * 별도 플래그를 두지 않고 매번 타임라인 상태에서 새로 계산하므로,
+ * 클립을 옮기거나 지워도 stale 트랜지션이 남지 않는다.
+ * 프리뷰(app.js)와 렌더가 이 함수를 공유해야 결과가 일치한다.
+ *
+ * @param {Array} clips  프로젝트 클립 배열
+ * @param {number} outFPS 출력 fps
+ * @returns {{[clipId: string]: {fadeIn: number, fadeOut: number, fadeOutStart: number}}}
+ *          단위: 초 (절대 타임라인 시각)
+ */
+function computeVideo1Transitions(clips, outFPS) {
+    // 반 프레임 미만 겹침은 전환으로 보지 않는다.
+    // ffmpeg 의 fade/afade 는 d=0 을 만나면 에러 대신 프레임 수 모드로 조용히 폴백해서
+    // 약 1초짜리 엉뚱한 페이드를 만들어버리므로, 여기서 반드시 잘라내야 한다.
+    const EPS = 0.5 / (outFPS || 30);
+
+    const sorted = (clips || [])
+        .filter(c => c && c.track === 'video1')
+        .sort((a, b) => (Number(a.timelineStart) || 0) - (Number(b.timelineStart) || 0));
+
+    const map = {};
+    sorted.forEach(c => { map[c.id] = { fadeIn: 0, fadeOut: 0, fadeOutStart: 0 }; });
+
+    for (let i = 0; i < sorted.length - 1; i++) {
+        const prev = sorted[i];
+        const next = sorted[i + 1];
+
+        const prevStart = Number(prev.timelineStart) || 0;
+        const prevDur = Number(prev.duration) || 0;
+        const nextDur = Number(next.duration) || 0;
+        const overlap = (prevStart + prevDur) - (Number(next.timelineStart) || 0);
+        if (overlap < EPS) continue;                 // 겹침 없음
+
+        // 다음 클립이 앞 클립에 완전히 포함되면 overlap > nextDur 이 된다.
+        // 페이드 길이가 자기 재생 길이를 넘으면 알파가 끝까지 1 에 도달하지 못하므로 잘라준다.
+        const d = Math.min(overlap, nextDur);
+        if (d < EPS) continue;
+
+        map[next.id].fadeIn = d;
+
+        // 완전 포함(삽입) 케이스에서는 prevEnd - d 가 겹침 구간이 아니라
+        // 앞 클립의 꼬리를 가리키게 된다. 뒤에 아무것도 없는데 소리만 죽으므로 건드리지 않는다.
+        const contained = overlap > nextDur + 1e-6;
+        if (!contained) {
+            map[prev.id].fadeOut = d;
+            map[prev.id].fadeOutStart = (prevStart + prevDur) - d;   // == next.timelineStart
+        }
+    }
+
+    return map;
+}
+
+// 여러 줄 자막의 줄 간격(글자 크기 대비 배수).
+// app.js 의 프리뷰 자막 그리기와 반드시 같은 값이어야 미리보기와 결과가 일치한다.
+const TEXT_LINE_SPACING = 1.3;
+
 function generateFFmpegCommand(projectState) {
     const { clips, assets } = projectState;
     
@@ -36,7 +94,10 @@ function generateFFmpegCommand(projectState) {
     const video2Clips = clips.filter(c => c.track === 'video2').sort((a, b) => a.timelineStart - b.timelineStart);
     const audioClips = clips.filter(c => c.track === 'audio').sort((a, b) => a.timelineStart - b.timelineStart);
     const overlayClips = clips.filter(c => c.track === 'overlay').sort((a, b) => a.timelineStart - b.timelineStart);
-    
+
+    // video1 인접 클립의 겹침 = 암시적 크로스디졸브 구간 (프리뷰와 공유하는 계산)
+    const v1Transitions = computeVideo1Transitions(clips, outFPS);
+
     // 메인 비디오 트랙 1이 비어있으면 명령어를 생성하지 않음
     if (video1Clips.length === 0) {
         return {
@@ -64,6 +125,13 @@ function generateFFmpegCommand(projectState) {
     // 1. Video Track 1 클립 입력 정의
     const video1Mappings = video1Clips.map((clip, index) => {
         const inputIdx = currentInputIndex++;
+        // 정지 이미지 입력에는 -ss/-t 를 걸 수 없다 (프레임이 하나뿐이라 구간 자르기가 무의미).
+        // 길이는 필터측 loop 로 만들어낸다. rawInputs.loop 은 -stream_loop 을 뜻하므로 넣지 않는다.
+        if (clip.mediaType === 'image') {
+            inputs.push(`-i "${clip.localPath}"`);
+            rawInputs.push({ path: clip.localPath });
+            return { clip, inputIdx };
+        }
         const srcDur = clip.sourceEnd - clip.sourceStart;
         inputs.push(`-ss ${formatTime(clip.sourceStart)} -t ${formatTime(srcDur)} -i "${clip.localPath}"`);
         rawInputs.push({
@@ -136,9 +204,11 @@ function generateFFmpegCommand(projectState) {
     // 1. Video Track 1 클립 전처리 및 베이스 캔버스 상 오버레이 합성
     video1Mappings.forEach((mapping, i) => {
         const { clip, inputIdx } = mapping;
+        const trans = v1Transitions[clip.id] || { fadeIn: 0, fadeOut: 0, fadeOutStart: 0 };
+        const isStill = clip.mediaType === 'image';
         let vFilters = [];
         let aFilters = [];
-        
+
         // 1.1 회전 (Transpose)
         if (clip.rotation === 90) vFilters.push("transpose=1");
         else if (clip.rotation === 180) vFilters.push("transpose=2,transpose=2");
@@ -148,7 +218,16 @@ function generateFFmpegCommand(projectState) {
         vFilters.push(`scale=w='if(gte(iw/ih,${outW}/${outH}),${outW},-1)':h='if(gte(iw/ih,${outW}/${outH}),-1,${outH})'`);
         vFilters.push(`pad=${outW}:${outH}:(${outW}-iw)/2:(${outH}-ih)/2:black`);
         vFilters.push("setsar=1");
-        
+
+        // 1.2.1 정지 이미지 → duration 길이의 영상 스트림으로 부풀린다.
+        //       이미지 입력의 기본 framerate 는 25fps(실측)이고 loop 은 N+1 프레임을 만든다.
+        //       스케일/패딩 뒤에 두어 1프레임만 변환하고 복제한다(큰 사진에서 훨씬 싸다).
+        //       초과분은 overlay 의 enable 창과 출력 -t 가 잘라내므로 조금 넘겨도 무해하다.
+        if (isStill) {
+            const stillFrames = Math.ceil(clip.duration * (clip.speed || 1.0) * 25) + 2;
+            vFilters.push(`loop=loop=${stillFrames}:size=1:start=0`);
+        }
+
         // 1.3 배속 조절 (Speed)
         const speed = clip.speed || 1.0;
         if (Math.abs(speed - 1.0) > 0.01) {
@@ -185,6 +264,16 @@ function generateFFmpegCommand(projectState) {
             vFilters.push(`setpts=PTS+${timelineOffset.toFixed(2)}/TB`);
         }
 
+        // 1.6 앞 클립과 겹치면 그 구간만큼 알파 페이드 인 = 크로스디졸브.
+        //     setpts 로 절대 시각으로 옮긴 뒤이므로 st 는 절대 타임라인 초 단위다.
+        //     앞 클립 overlay 가 이 구간에도 enable 상태로 아래에 깔려 있으므로 디졸브가 된다.
+        //     alpha=1 이 없으면 색만 검게 죽어(알파 255 유지) 페이드투블랙이 되므로 반드시 필요하다.
+        //     fade 의 alpha 는 알파 플레인을 요구하므로 yuva420p 로 변환해 넘긴다.
+        if (trans.fadeIn > 0) {
+            vFilters.push("format=yuva420p");
+            vFilters.push(`fade=t=in:st=${clip.timelineStart.toFixed(2)}:d=${trans.fadeIn.toFixed(3)}:alpha=1`);
+        }
+
         // FPS 통일
         vFilters.push(`fps=${outFPS}`);
         
@@ -199,19 +288,35 @@ function generateFFmpegCommand(projectState) {
             aFilters.push(`adelay=${delayMs}|${delayMs}`);
         }
         
+        // 1.7 오디오 크로스페이드 (영상과 같은 겹침 구간).
+        //     adelay 이후이므로 st 는 절대 타임라인 초 단위다.
+        //     영상 디졸브와 곡선을 맞추기 위해 기본 equal-gain(tri) 을 그대로 쓴다.
+        if (trans.fadeIn > 0) {
+            aFilters.push(`afade=t=in:st=${clip.timelineStart.toFixed(2)}:d=${trans.fadeIn.toFixed(3)}`);
+        }
+        if (trans.fadeOut > 0) {
+            aFilters.push(`afade=t=out:st=${trans.fadeOutStart.toFixed(2)}:d=${trans.fadeOut.toFixed(3)}`);
+        }
+
         const vProcessed = `v1_proc_${inputIdx}`;
         const aProcessed = `a1_delayed_${inputIdx}`;
         
         filterComplex.push(`[${inputIdx}:v]${vFilters.join(",")}[${vProcessed}]`);
-        filterComplex.push(`[${inputIdx}:a]${aFilters.join(",")}[${aProcessed}]`);
-        
+        // 정지 이미지 입력에는 오디오 스트림이 없다. [N:a] 를 참조하면 그래프가 통째로 깨진다.
+        if (!isStill) {
+            filterComplex.push(`[${inputIdx}:a]${aFilters.join(",")}[${aProcessed}]`);
+        }
+
         // 베이스 캔버스 위에 타임라인 위치(timelineStart)에 맞게 오버레이
         const nextVideoNode = `v1_layer_${inputIdx}`;
         const endTimeline = clip.timelineStart + clip.duration;
         filterComplex.push(`[${currentVideoNode}][${vProcessed}]overlay=x=0:y=0:enable='between(t,${clip.timelineStart.toFixed(2)},${endTimeline.toFixed(2)})'[${nextVideoNode}]`);
         currentVideoNode = nextVideoNode;
-        
-        audioMixInputs.push(`[${aProcessed}]`);
+
+        // 정지 이미지는 소리가 없으므로 amix 입력에 넣지 않는다 (aFilters 는 쓰이지 않는다)
+        if (!isStill) {
+            audioMixInputs.push(`[${aProcessed}]`);
+        }
     });
     
     // 2. Video Track 2 (PIP) 전처리 및 오버레이 합성
@@ -356,19 +461,37 @@ function generateFFmpegCommand(projectState) {
         // 배경 상자: 명시적으로 'on'일 때만 적용 (기본값은 off)
         const boxOpts = clip.textBgbox === 'on' ? ':box=1:boxcolor=black@0.4' : '';
 
-        // 特수문자 escape
-        let textEscaped = (clip.text || '')
-            .replace(/\\/g, '\\\\')
-            .replace(/'/g, "\\'")
-            .replace(/:/g, '\\:')
-            .replace(/%/g, '\\%');
+        const textXExpr = clip.x === 640 ? "(w-text_w)/2" : `${Math.round(clip.x * (outW / 1280))}`;
+        const baseY = Math.round(clip.y * (outH / 720));
 
-        let textXExpr = clip.x === 640 ? "(w-text_w)/2" : `${Math.round(clip.x * (outW / 1280))}`;
-        let textYExpr = `${Math.round(clip.y * (outH / 720))}`;
+        // 여러 줄 처리: 줄마다 drawtext 를 따로 건다.
+        //  text='...' 안에 진짜 개행문자를 넣으면 drawtext 가 줄바꿈은 하되
+        //  그 개행문자를 글리프로도 그려서 두부(□) 사각형이 함께 나온다(실측 확인).
+        //  백슬래시 이스케이프(\n)는 리터럴 문자로 렌더링되어 역시 쓸 수 없다.
+        //  \r 은 남아 있으면 그 자체가 두부로 보이므로 먼저 제거한다.
+        const lines = String(clip.text || '').replace(/\r/g, '').split('\n');
+        const lineHeight = fontSize * TEXT_LINE_SPACING;
+        const lineCount = lines.length;
 
-        const nextVideoNode = `v_text_overlay_${i}`;
-        filterComplex.push(`[${currentVideoNode}]drawtext=text='${textEscaped}':x=${textXExpr}:y=${textYExpr}:fontsize=${fontSize}:fontcolor=${fontColorWithAlpha}${textEffectOpts}${boxOpts}:fontfile='${fontPath}':enable='between(t,${clip.timelineStart.toFixed(2)},${endTimeline.toFixed(2)})'[${nextVideoNode}]`);
-        currentVideoNode = nextVideoNode;
+        let textNode = currentVideoNode;
+        lines.forEach((line, li) => {
+            if (line.length === 0) return;   // 빈 줄은 자리만 차지한다 (필터를 만들지 않음)
+
+            // 特수문자 escape
+            const textEscaped = line
+                .replace(/\\/g, '\\\\')
+                .replace(/'/g, "\\'")
+                .replace(/:/g, '\\:')
+                .replace(/%/g, '\\%');
+
+            // 첫 줄 위치는 예전과 동일하게 두고, 여러 줄이면 그 점을 기준으로 위아래로 펼친다
+            const textYExpr = `${Math.round(baseY + (li - (lineCount - 1) / 2) * lineHeight)}`;
+
+            const nextVideoNode = `v_text_overlay_${i}_${li}`;
+            filterComplex.push(`[${textNode}]drawtext=text='${textEscaped}':x=${textXExpr}:y=${textYExpr}:fontsize=${fontSize}:fontcolor=${fontColorWithAlpha}${textEffectOpts}${boxOpts}:fontfile='${fontPath}':enable='between(t,${clip.timelineStart.toFixed(2)},${endTimeline.toFixed(2)})'[${nextVideoNode}]`);
+            textNode = nextVideoNode;
+        });
+        currentVideoNode = textNode;
     });
 
     // 6. 오디오 최종 믹싱 (amix)
@@ -559,6 +682,7 @@ function getFFmpegFontPath(textFont, textFontCustom, isBold) {
 if (typeof module !== 'undefined' && module.exports) {
     module.exports = {
         generateFFmpegCommand,
+        computeVideo1Transitions,
         getAudioTempoFilter,
         getFFmpegFontPath,
         formatTime

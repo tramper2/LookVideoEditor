@@ -583,6 +583,54 @@ body {
     display: block;
     cursor: default;
     transition: aspect-ratio 0.25s ease;
+    /* 휠 확대/축소는 CSS transform 만 쓴다 (캔버스 비트맵과 렌더 결과는 그대로) */
+    transform-origin: 50% 50%;
+    will-change: transform;
+}
+
+/* 확대 중에는 드래그로 화면을 옮길 수 있다 */
+.preview-canvas-wrapper.zoomed #preview-canvas {
+    cursor: grab;
+}
+
+.preview-canvas-wrapper.zoomed #preview-canvas:active {
+    cursor: grabbing;
+}
+
+.preview-zoom-badge {
+    position: absolute;
+    top: 24px;
+    right: 24px;
+    z-index: 5;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 10px;
+    border-radius: 999px;
+    background: rgba(0, 0, 0, 0.72);
+    border: 1px solid rgba(255, 255, 255, 0.14);
+    color: #e8e8ee;
+    font-size: 0.72rem;
+    font-weight: 600;
+    cursor: pointer;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.18s ease;
+}
+
+.preview-zoom-badge.show {
+    opacity: 1;
+    pointer-events: auto;
+}
+
+.preview-zoom-badge:hover {
+    background: rgba(0, 0, 0, 0.88);
+}
+
+.preview-zoom-reset {
+    color: var(--accent);
+    font-size: 0.68rem;
+    margin-left: 2px;
 }
 
 .preview-overlay {
@@ -1060,6 +1108,14 @@ body {
 
 .track-lane.dragover-lane {
     background-color: rgba(255, 65, 108, 0.08);
+}
+
+/* 왼쪽 미디어 목록에 탐색기 파일을 끌어온 상태 */
+.asset-list.dragover-lane {
+    background-color: rgba(255, 65, 108, 0.08);
+    border-radius: 6px;
+    outline: 1px dashed rgba(255, 65, 108, 0.5);
+    outline-offset: -2px;
 }
 
 /* Timeline Clip Blocks */

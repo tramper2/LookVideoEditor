@@ -70,6 +70,8 @@ const DOM = {
     
     previewCanvas: document.getElementById('preview-canvas'),
     previewCanvasWrapper: document.getElementById('preview-canvas-wrapper'),
+    previewZoomBadge: document.getElementById('preview-zoom-badge'),
+    previewZoomText: document.getElementById('preview-zoom-text'),
     previewOverlay: document.getElementById('preview-overlay'),
     previewResolutionBadge: document.getElementById('preview-resolution-badge'),
     previewBadgeText: document.getElementById('preview-badge-text'),
@@ -311,6 +313,9 @@ function updatePreviewResolution() {
     DOM.previewCanvas.height = STATE.outputHeight;
     DOM.previewCanvas.style.aspectRatio = `${STATE.outputWidth} / ${STATE.outputHeight}`;
 
+    // 캔버스 크기가 바뀌면 팬 한계도 다시 계산해야 한다
+    applyPreviewTransform();
+
     // 상단 및 타임라인 해상도 정보 뱃지 갱신
     let aspectText = "16:9";
     if (STATE.outputWidth === 1080 && STATE.outputHeight === 1920) aspectText = "세로 9:16";
@@ -328,7 +333,7 @@ function updatePreviewResolution() {
 }
 
 function setupEventListeners() {
-    // 미디어 가져오기 이벤트 (영상은 릴스 폴더 선택으로 로드, BGM/스티커만 파일 선택)
+    // 미디어 가져오기 이벤트 (영상은 릴스 폴더 선택으로 로드, 이미지/음악만 파일 선택)
     if (DOM.btnAddBgmSticker) {
         DOM.btnAddBgmSticker.addEventListener('click', () => DOM.inputMedia.click());
     }
@@ -338,6 +343,30 @@ function setupEventListeners() {
             e.target.value = '';
         }
     });
+
+    // 탐색기에서 파일을 왼쪽 미디어 목록에 바로 떨어뜨려도 가져온다 (배치는 하지 않고 목록에만 추가)
+    if (DOM.assetList) {
+        DOM.assetList.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            e.dataTransfer.dropEffect = 'copy';
+            DOM.assetList.classList.add('dragover-lane');
+        });
+        DOM.assetList.addEventListener('dragleave', () => {
+            DOM.assetList.classList.remove('dragover-lane');
+        });
+        DOM.assetList.addEventListener('drop', (e) => {
+            DOM.assetList.classList.remove('dragover-lane');
+            e.preventDefault();
+            const files = e.dataTransfer.files;
+            if (files && files.length > 0) {
+                handleMediaImport(files);
+            }
+        });
+    }
+
+    // 목표 지점 밖에 파일을 떨어뜨리면 브라우저가 그 파일을 열어버려 편집 내용이 날아간다. 기본 동작을 막는다.
+    window.addEventListener('dragover', (e) => e.preventDefault());
+    window.addEventListener('drop', (e) => e.preventDefault());
 
     // 무료 음악 검색 (온라인 CC0/퍼블릭 도메인)
     if (DOM.btnSearchMusic) DOM.btnSearchMusic.addEventListener('click', openMusicSearchModal);
@@ -635,6 +664,7 @@ function setupEventListeners() {
     lanes.forEach(lane => {
         lane.addEventListener('dragover', (e) => {
             e.preventDefault();
+            e.dataTransfer.dropEffect = 'copy';
             lane.classList.add('dragover-lane');
         });
         lane.addEventListener('dragleave', () => {
@@ -643,14 +673,33 @@ function setupEventListeners() {
         lane.addEventListener('drop', (e) => {
             lane.classList.remove('dragover-lane');
             e.preventDefault();
-            
-            const assetId = e.dataTransfer.getData('text/plain');
+
             const targetTrack = lane.parentElement.dataset.trackType;
+            const rect = lane.getBoundingClientRect();
+            const dropX = e.clientX - rect.left + lane.scrollLeft;
+            const dropTime = Math.max(0, dropX / STATE.timelineZoom);
+
+            // 1) 탐색기(OS)에서 파일을 직접 떨어뜨린 경우 → 가져오기 + 그 자리에 배치
+            const files = e.dataTransfer.files;
+            if (files && files.length > 0) {
+                // 여러 개를 한꺼번에 떨어뜨리면 앞 클립 끝에 차례로 이어 붙인다
+                let cursor = dropTime;
+                handleMediaImport(files, (asset) => {
+                    const before = STATE.clips.length;
+                    addAssetToTimeline(asset.id, targetTrack, cursor);
+                    if (STATE.clips.length > before) {
+                        // addAssetToTimeline 은 동기이므로 방금 놓인 클립이 마지막 항목이다
+                        const placed = STATE.clips[STATE.clips.length - 1];
+                        cursor = placed.timelineStart + placed.duration;
+                    }
+                });
+                return;
+            }
+
+            // 2) 앱 안 미디어 목록에서 끌어온 경우 → 그 자리에 배치
+            const assetId = e.dataTransfer.getData('text/plain');
             if (assetId) {
-                const rect = lane.getBoundingClientRect();
-                const dropX = e.clientX - rect.left + lane.scrollLeft;
-                const timelineStart = Math.max(0, dropX / STATE.timelineZoom);
-                addAssetToTimeline(assetId, targetTrack, timelineStart);
+                addAssetToTimeline(assetId, targetTrack, dropTime);
             }
         });
     });
@@ -701,7 +750,11 @@ function setupEventListeners() {
 }
 
 // --- 미디어 파일 임포트 로직 ---
-function handleMediaImport(files) {
+// onAssetReady(asset) 는 에셋을 타임라인에 놓을 수 있게 된 시점에 호출된다.
+//  - 이미지 : 즉시
+//  - 영상/오디오 : 메타데이터가 로드되어 asset.duration 이 확정된 뒤
+//    (그 전에 놓으면 길이가 기본값 5초로 굳어버린다)
+function handleMediaImport(files, onAssetReady) {
     DOM.previewOverlay.classList.remove('hide');
     
     const safetyTimeout = setTimeout(() => {
@@ -726,10 +779,13 @@ function handleMediaImport(files) {
             fileNameLower.endsWith('.wma') || 
             fileNameLower.endsWith('.ogg')) {
             type = 'audio';
-        } else if (file.type.startsWith('image/') || 
-                   fileNameLower.endsWith('.png') || 
-                   fileNameLower.endsWith('.jpg') || 
-                   fileNameLower.endsWith('.jpeg')) {
+        } else if (file.type.startsWith('image/') ||
+                   fileNameLower.endsWith('.png') ||
+                   fileNameLower.endsWith('.jpg') ||
+                   fileNameLower.endsWith('.jpeg') ||
+                   fileNameLower.endsWith('.webp') ||
+                   fileNameLower.endsWith('.gif') ||
+                   fileNameLower.endsWith('.bmp')) {
             type = 'image';
         }
 
@@ -748,7 +804,10 @@ function handleMediaImport(files) {
                 id,
                 name: file.name,
                 type,
-                duration: 5.0,
+                // 이미지는 고유 길이가 없으므로 "늘릴 수 있는 상한"을 크게 잡아둔다.
+                // duration 은 트림/길이 입력의 상한(assetDuration)으로 쓰이므로,
+                // 이 값이 작으면 Video Track 1 의 정지 구간을 늘릴 수 없다.
+                duration: type === 'image' ? 60.0 : 5.0,
                 url,
                 file,
                 localPath
@@ -760,6 +819,15 @@ function handleMediaImport(files) {
             asset.file = file;
             uploadAssetFileToServer(asset);
         }
+
+        // 영상은 onloadedmetadata 뒤에 onerror 까지 겹쳐 발화할 수 있어 한 번만 알린다
+        // (두 번 알리면 같은 파일이 타임라인에 클립 두 개로 놓인다)
+        let notified = false;
+        const notifyReady = () => {
+            if (notified) return;
+            notified = true;
+            if (onAssetReady) onAssetReady(asset);
+        };
 
         // 숨김 플레이어 생성하여 메타데이터 및 프레임 버퍼 로드
         if (type === 'video') {
@@ -777,6 +845,7 @@ function handleMediaImport(files) {
                 updateAssetListUI();
                 updateTimelineClipsUI();
                 renderPreview();
+                notifyReady();
             };
             video.onerror = () => {
                 console.warn("[LookVideoEditor] 비디오 프리뷰 포맷 미지원:", file.name);
@@ -784,6 +853,7 @@ function handleMediaImport(files) {
                 clearTimeout(safetyTimeout);
                 DOM.previewOverlay.classList.add('hide');
                 updateAssetListUI();
+                notifyReady();
             };
             DOM.hiddenPlayersContainer.appendChild(video);
             activePlayers[asset.id] = video;
@@ -798,11 +868,13 @@ function handleMediaImport(files) {
                 DOM.previewOverlay.classList.add('hide');
                 updateAssetListUI();
                 updateTimelineClipsUI();
+                notifyReady();
             };
             audio.onerror = () => {
                 clearTimeout(safetyTimeout);
                 DOM.previewOverlay.classList.add('hide');
                 updateAssetListUI();
+                notifyReady();
             };
             DOM.hiddenPlayersContainer.appendChild(audio);
             activePlayers[asset.id] = audio;
@@ -811,6 +883,7 @@ function handleMediaImport(files) {
             clearTimeout(safetyTimeout);
             DOM.previewOverlay.classList.add('hide');
             updateAssetListUI();
+            notifyReady();
         }
     });
 
@@ -1482,8 +1555,8 @@ function addAssetToTimeline(assetId, trackType, timelineStart) {
         alert("오디오 파일은 Audio Track에만 배치할 수 있습니다.");
         return;
     }
-    if (asset.type === 'image' && trackType !== 'overlay') {
-        alert("이미지 스티커는 Overlay Track에만 배치할 수 있습니다.");
+    if (asset.type === 'image' && trackType !== 'overlay' && trackType !== 'video1') {
+        alert("이미지는 Overlay Track(스티커) 또는 Video Track 1(정지 구간)에 배치할 수 있습니다.");
         return;
     }
 
@@ -1525,6 +1598,10 @@ function addAssetToTimeline(assetId, trackType, timelineStart) {
     if (trackType === 'video2') {
         // PIP 기본 크기 및 좌표 (1280x720 기준)
         newClip.pip = { width: 320, height: 180, x: 20, y: 20 };
+    } else if (trackType === 'video1' && asset.type === 'image') {
+        // Video Track 1 위의 정지 이미지 = 정지 구간.
+        // 생성기가 입력 스펙(-ss/-t 없이 -i, 오디오 분기 생략)을 다르게 만들어야 하므로 표시해 둔다.
+        newClip.mediaType = 'image';
     } else if (trackType === 'overlay' && asset.type === 'image') {
         newClip.overlayType = 'image';
         newClip.width = 150;
@@ -1623,14 +1700,25 @@ function updateTimelineClipsUI() {
             loopBadgeHtml = `<span class="clip-loop-badge" title="반복 재생"><i class="fa-solid fa-repeat"></i></span>`;
         }
 
+        // 정지 이미지 구간은 반복 배지를 쓰지 않는다 (이미 정지 상태라 의미가 없음)
+        let stillBadgeHtml = '';
+        if (clip.mediaType === 'image') {
+            stillBadgeHtml = `<span class="clip-loop-badge" title="정지 이미지 구간"><i class="fa-solid fa-image"></i> 정지</span>`;
+        }
+
         let displayName = clip.name;
         if (clip.overlayType === 'text') displayName = clip.text || '자막 텍스트';
+
+        // 정지 이미지는 source in/out 개념이 없으므로 길이만 보여준다
+        const durationInfoHtml = clip.mediaType === 'image'
+            ? `${clip.duration.toFixed(1)}s`
+            : `${clip.duration.toFixed(1)}s [${clip.sourceStart.toFixed(1)}~${clip.sourceEnd.toFixed(1)}]`;
 
         clipEl.innerHTML = `
             <div class="trim-handle trim-handle-left" data-handle="left"></div>
             <span class="clip-name">${displayName}</span>
-            ${speedBadgeHtml}${loopBadgeHtml}
-            <span class="clip-duration-info">${clip.duration.toFixed(1)}s [${clip.sourceStart.toFixed(1)}~${clip.sourceEnd.toFixed(1)}]</span>
+            ${speedBadgeHtml}${loopBadgeHtml}${stillBadgeHtml}
+            <span class="clip-duration-info">${durationInfoHtml}</span>
             <div class="trim-handle trim-handle-right" data-handle="right"></div>
         `;
 
@@ -2602,10 +2690,21 @@ function renderPreview() {
     ctx.fillRect(0, 0, canvasW, canvasH);
 
     // 1. 비디오 트랙 1 (메인 영상)
-    const v1Clip = STATE.clips.find(c => c.track === 'video1' && time >= c.timelineStart && time < c.timelineStart + c.duration);
-    if (v1Clip) {
-        drawVideoClip(v1Clip, time, 0, 0, canvasW, canvasH);
-    }
+    //    겹치는 클립은 ffmpeg 렌더와 동일하게 크로스디졸브로 합성한다.
+    //    (겹침 계산은 ffmpeg-generator.js 의 computeVideo1Transitions 를 그대로 공유한다)
+    const v1Transitions = computeVideo1Transitions(STATE.clips, STATE.outputFps);
+    const v1Active = STATE.clips
+        .filter(c => c.track === 'video1' && time >= c.timelineStart && time < c.timelineStart + c.duration)
+        .sort((a, b) => a.timelineStart - b.timelineStart);
+
+    v1Active.forEach(clip => {
+        const trans = v1Transitions[clip.id];
+        ctx.globalAlpha = (trans && trans.fadeIn > 0)
+            ? Math.max(0, Math.min(1, (time - clip.timelineStart) / trans.fadeIn))
+            : 1;
+        drawVideoClip(clip, time, 0, 0, canvasW, canvasH, true);
+        ctx.globalAlpha = 1;
+    });
 
     // 2. 비디오 트랙 2 (PIP 오버레이 영상)
     const v2Clip = STATE.clips.find(c => c.track === 'video2' && time >= c.timelineStart && time < c.timelineStart + c.duration);
@@ -2619,7 +2718,8 @@ function renderPreview() {
         const pw = pip.width * scaleX;
         const ph = pip.height * scaleY;
         
-        drawVideoClip(v2Clip, time, px, py, pw, ph);
+        // PIP 는 ffmpeg 가 scale=${pipW}:${pipH} 로 늘려 그리므로 레터박스를 끼우지 않는다
+        drawVideoClip(v2Clip, time, px, py, pw, ph, false);
     }
 
     // 3. PNG 이미지 오버레이 및 자막
@@ -2665,18 +2765,30 @@ function renderPreview() {
                 ctx.shadowBlur = 0;
             }
 
-            let textX = clip.x === 640 ? canvasW / 2 : (clip.x * (canvasW / 1280));
-            let textY = clip.y * (canvasH / 720);
+            const textX = clip.x === 640 ? canvasW / 2 : (clip.x * (canvasW / 1280));
+            const textY = clip.y * (canvasH / 720);
+
+            // 여러 줄 처리: 캔버스 fillText 는 \n 을 줄바꿈으로 처리하지 않으므로 직접 나눠 그린다.
+            // \r 은 렌더 쪽에서 두부(□)로 보이므로 여기서도 똑같이 제거한다.
+            // 줄 간격 TEXT_LINE_SPACING 은 ffmpeg-generator.js 가 정의한 값을 그대로 공유한다
+            // (스크립트 로드 순서상 generator 가 먼저라 전역으로 접근 가능).
+            const lines = String(clip.text || '').replace(/\r/g, '').split('\n');
+            const lineHeight = fontSize * TEXT_LINE_SPACING;
+            const lineCount = lines.length;
+            const lineY = (li) => textY + (li - (lineCount - 1) / 2) * lineHeight;
+
+            ctx.textAlign = clip.x === 640 ? 'center' : 'left';
+            ctx.textBaseline = 'middle';
 
             // 배경 상자 (textBgbox === 'on'일 때 프리뷰 캔버스에도 동일하게 렌더링)
+            // 여러 줄이면 가장 넓은 줄 기준으로 전체 줄을 감싼다
             if (clip.textBgbox === 'on') {
-                const textStr = clip.text || '';
-                const metrics = ctx.measureText(textStr);
-                const textW = metrics.width;
+                let textW = 0;
+                lines.forEach(l => { textW = Math.max(textW, ctx.measureText(l).width); });
                 const padX = 10 * scale;
                 const padY = 6 * scale;
                 const bgW = textW + padX * 2;
-                const bgH = fontSize + padY * 2;
+                const bgH = (lineCount - 1) * lineHeight + fontSize + padY * 2;
                 const bgX = (clip.x === 640) ? (textX - textW / 2 - padX) : (textX - padX);
                 const bgY = textY - (bgH / 2);
 
@@ -2686,27 +2798,59 @@ function renderPreview() {
                 ctx.restore();
             }
 
-            ctx.textAlign = clip.x === 640 ? 'center' : 'left';
-            ctx.textBaseline = 'middle';
-            ctx.fillText(clip.text || '', textX, textY);
-
             if (hasOutline) {
                 ctx.strokeStyle = 'rgba(0,0,0,0.9)';
                 ctx.lineWidth = Math.max(2, fontSize * 0.06);
-                ctx.strokeText(clip.text || '', textX, textY);
             }
+
+            lines.forEach((line, li) => {
+                const ly = lineY(li);
+                ctx.fillText(line, textX, ly);
+                if (hasOutline) ctx.strokeText(line, textX, ly);
+            });
 
             ctx.shadowBlur = 0;
         }
     });
 }
 
-// 개별 비디오 그리기 + 필터 + 변환 엔진
-function drawVideoClip(clip, time, x, y, w, h) {
-    const player = activePlayers[clip.assetId];
-    if (!player) return;
+/**
+ * ffmpeg 의 scale + pad 와 같은 규칙으로 안쪽(레터박스) 사각형을 계산한다.
+ * 소스 비율을 지키고 남는 쪽에 검은 여백을 두는 것이 렌더 결과와 같다.
+ */
+function fitLetterbox(srcW, srcH, dstW, dstH) {
+    if (!srcW || !srcH) return { x: 0, y: 0, w: dstW, h: dstH };
+    const srcAR = srcW / srcH;
+    const dstAR = dstW / dstH;
+    let w, h;
+    if (srcAR >= dstAR) { w = dstW; h = dstW / srcAR; }
+    else { h = dstH; w = dstH * srcAR; }
+    return { x: (dstW - w) / 2, y: (dstH - h) / 2, w, h };
+}
 
+// 정지 이미지 캐시. 매 프레임 new Image() 를 만들면 로딩 전 프레임이 비어 깜빡인다.
+const assetImageCache = {};
+function getAssetImage(asset) {
+    if (!asset || !asset.url) return null;
+    let entry = assetImageCache[asset.id];
+    if (!entry || entry.url !== asset.url) {
+        entry = { url: asset.url, img: new Image() };
+        entry.img.src = asset.url;
+        assetImageCache[asset.id] = entry;
+    }
+    return (entry.img.complete && entry.img.naturalWidth > 0) ? entry.img : null;
+}
+
+// 개별 비디오/정지이미지 그리기 + 필터 + 변환 엔진
+//  letterbox=true 면 ffmpeg 처럼 원본 비율을 지키고 검은 여백을 둔다 (Video Track 1).
+//  PIP 는 ffmpeg 가 늘려 그리므로 false 로 호출해 기존 모양을 유지한다.
+function drawVideoClip(clip, time, x, y, w, h, letterbox) {
     const asset = STATE.assets.find(a => a.id === clip.assetId);
+    const isStill = clip.mediaType === 'image';
+    const player = isStill ? null : activePlayers[clip.assetId];
+    const image = isStill ? getAssetImage(asset) : null;
+    if (!player && !image) return;
+
     if (asset && asset.isPreviewDisabled) {
         ctx.save();
         const cx = x + w / 2;
@@ -2739,8 +2883,9 @@ function drawVideoClip(clip, time, x, y, w, h) {
 
     const clipElapsed = time - clip.timelineStart;
     const sourcePlayTime = clip.sourceStart + clipElapsed * (clip.speed || 1.0);
-    
-    if (!STATE.isPlaying && !STATE.isRendering) {
+
+    // 정지 이미지는 seek 할 플레이어가 없다 (프레임이 하나뿐)
+    if (player && !STATE.isPlaying && !STATE.isRendering) {
         if (player.readyState >= 1) {
             try {
                 const targetTime = sourcePlayTime === 0 ? 0.001 : sourcePlayTime;
@@ -2769,13 +2914,19 @@ function drawVideoClip(clip, time, x, y, w, h) {
         const fadeStartTime = clip.timelineStart + clip.duration - fadeDuration;
         if (time >= fadeStartTime) {
             const progress = Math.max(0, Math.min(1, (time - fadeStartTime) / fadeDuration));
-            ctx.globalAlpha = Math.max(0, 1.0 - progress);
+            // 크로스디졸브 알파와 곱셈으로 합성한다 (대입하면 겹침 페이드가 덮여 사라진다)
+            ctx.globalAlpha = ctx.globalAlpha * Math.max(0, 1.0 - progress);
         }
     }
 
-    // 회전 렌더링
-    const cx = x + w / 2;
-    const cy = y + h / 2;
+    // 소스 픽셀 크기 (레터박스 계산용). 메타데이터 로딩 전이면 0 이라 전체 사각형으로 폴백된다.
+    const srcW = player ? player.videoWidth : (image ? image.naturalWidth : 0);
+    const srcH = player ? player.videoHeight : (image ? image.naturalHeight : 0);
+    const fit = letterbox ? fitLetterbox(srcW, srcH, w, h) : { x: 0, y: 0, w, h };
+
+    // 회전 렌더링 (중심은 레터박스 안쪽 사각형 기준)
+    const cx = x + fit.x + fit.w / 2;
+    const cy = y + fit.y + fit.h / 2;
     ctx.translate(cx, cy);
 
     if (clip.rotation !== 0) {
@@ -2787,11 +2938,11 @@ function drawVideoClip(clip, time, x, y, w, h) {
     if (clip.effects && clip.effects.includes('zoom_in')) zoomScale = 1.5;
     else if (clip.effects && clip.effects.includes('zoom_out')) zoomScale = 0.75;
 
-    const drawW = w * zoomScale;
-    const drawH = h * zoomScale;
+    const drawW = fit.w * zoomScale;
+    const drawH = fit.h * zoomScale;
 
     try {
-        ctx.drawImage(player, -drawW / 2, -drawH / 2, drawW, drawH);
+        ctx.drawImage(player || image, -drawW / 2, -drawH / 2, drawW, drawH);
     } catch (e) {
         ctx.fillStyle = '#1a1a20';
         ctx.fillRect(-drawW / 2, -drawH / 2, drawW, drawH);
@@ -2813,6 +2964,88 @@ function getCanvasFontFamily(fontKey) {
         default:
             return "'Malgun Gothic', 'Noto Sans KR', 'Outfit', sans-serif";
     }
+}
+
+// --- 프리뷰 확대/축소(휠) 및 화면 이동(드래그) ---
+//  CSS transform 만 쓴다. 캔버스 비트맵은 손대지 않으므로
+//  렌더 결과물과 브라우저 폴백 렌더(rCtx.drawImage)에는 영향이 없다.
+//
+//  transform: translate(pan) scale(zoom) + transform-origin 50% 50% 이므로
+//  캔버스 로컬 좌표 u 는 화면에서  screen(u) = C0 + pan + zoom * (u - c)  로 매핑된다.
+//  (C0 = 변환 전 캔버스 중심의 화면 좌표, c = 캔버스 로컬 중심)
+let previewZoom = 1.0;
+let previewPan = { x: 0, y: 0 };
+const PREVIEW_ZOOM_MIN = 1.0;
+const PREVIEW_ZOOM_MAX = 8.0;
+
+function previewCanvasCenter() {
+    // 캔버스는 래퍼의 콘텐츠 박스에 flex 중앙 정렬된다. 래퍼 패딩이 좌우대칭이라 중심이 일치한다.
+    const r = DOM.previewCanvasWrapper.getBoundingClientRect();
+    return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+}
+
+// 확대 상태에서 화면을 너무 멀리 밀어내지 않도록 제한한다.
+// 한계까지 밀면 캔버스 가장자리가 "확대 전 가장자리 위치"에 닿아 구석까지 볼 수 있다.
+function clampPreviewPan() {
+    const maxX = Math.max(0, (previewZoom - 1) * DOM.previewCanvas.offsetWidth / 2);
+    const maxY = Math.max(0, (previewZoom - 1) * DOM.previewCanvas.offsetHeight / 2);
+    previewPan.x = Math.max(-maxX, Math.min(maxX, previewPan.x));
+    previewPan.y = Math.max(-maxY, Math.min(maxY, previewPan.y));
+}
+
+function applyPreviewTransform() {
+    clampPreviewPan();
+    DOM.previewCanvas.style.transform =
+        `translate(${previewPan.x.toFixed(1)}px, ${previewPan.y.toFixed(1)}px) scale(${previewZoom.toFixed(4)})`;
+
+    const zoomed = previewZoom > 1.001;
+    DOM.previewCanvasWrapper.classList.toggle('zoomed', zoomed);
+    if (DOM.previewZoomBadge) {
+        DOM.previewZoomBadge.classList.toggle('show', zoomed);
+        if (DOM.previewZoomText) {
+            DOM.previewZoomText.textContent = `${Math.round(previewZoom * 100)}%`;
+        }
+    }
+}
+
+function resetPreviewZoom() {
+    previewZoom = 1.0;
+    previewPan = { x: 0, y: 0 };
+    applyPreviewTransform();
+}
+
+function onPreviewWheel(e) {
+    e.preventDefault();
+    const prev = previewZoom;
+    // 지수 스케일이라 마우스 휠과 트랙패드 모두 같은 느낌으로 동작한다
+    const next = Math.max(PREVIEW_ZOOM_MIN,
+                 Math.min(PREVIEW_ZOOM_MAX, prev * Math.exp(-e.deltaY * 0.0015)));
+    if (Math.abs(next - prev) < 1e-4) return;
+
+    // 커서 아래에 있던 지점이 확대 후에도 그 자리에 남도록 팬을 보정한다
+    const c0 = previewCanvasCenter();
+    const dx = e.clientX - c0.x;
+    const dy = e.clientY - c0.y;
+    const k = next / prev;
+    previewPan.x = dx - k * (dx - previewPan.x);
+    previewPan.y = dy - k * (dy - previewPan.y);
+
+    previewZoom = next;
+    applyPreviewTransform();
+}
+
+if (DOM.previewCanvasWrapper) {
+    // passive: false 여야 preventDefault 로 페이지 스크롤을 막을 수 있다
+    DOM.previewCanvasWrapper.addEventListener('wheel', onPreviewWheel, { passive: false });
+}
+if (DOM.previewCanvas) {
+    DOM.previewCanvas.addEventListener('dblclick', (e) => {
+        e.preventDefault();
+        resetPreviewZoom();
+    });
+}
+if (DOM.previewZoomBadge) {
+    DOM.previewZoomBadge.addEventListener('click', resetPreviewZoom);
 }
 
 // --- 프리뷰 캔버스 상의 자막/오버레이/PIP 마우스 드래그 이동 엔진 ---
@@ -2882,9 +3115,29 @@ DOM.previewCanvas.addEventListener('mousedown', (e) => {
     if (foundClip) {
         draggedCanvasClip = foundClip;
         selectClip(foundClip.id);
-        
+
         window.addEventListener('mousemove', onCanvasMouseMove);
         window.addEventListener('mouseup', onCanvasMouseUp);
+        return;
+    }
+
+    // 잡을 클립이 없고 확대 중이면 화면 이동(팬)
+    if (previewZoom > 1.001) {
+        const startClientX = e.clientX;
+        const startClientY = e.clientY;
+        const startPan = { x: previewPan.x, y: previewPan.y };
+
+        const onPanMove = (me) => {
+            previewPan.x = startPan.x + (me.clientX - startClientX);
+            previewPan.y = startPan.y + (me.clientY - startClientY);
+            applyPreviewTransform();
+        };
+        const onPanUp = () => {
+            window.removeEventListener('mousemove', onPanMove);
+            window.removeEventListener('mouseup', onPanUp);
+        };
+        window.addEventListener('mousemove', onPanMove);
+        window.addEventListener('mouseup', onPanUp);
     }
 });
 
@@ -4209,14 +4462,14 @@ function showMediaReconnectModal() {
             </div>
             <div class="modal-body">
                 <p>프로젝트 설정을 성공적으로 불러왔습니다!</p>
-                <p style="margin-top: 8px;">일부 미디어의 미리보기가 비활성화되어 있습니다. <strong>릴스 불러오기에서 해당 영상을 다시 추가</strong>하거나 BGM/스티커 파일을 다시 선택해 주세요.</p>
+                <p style="margin-top: 8px;">일부 미디어의 미리보기가 비활성화되어 있습니다. <strong>릴스 불러오기에서 해당 영상을 다시 추가</strong>하거나 이미지/음악 파일을 다시 선택해 주세요.</p>
                 <div class="highlight-group" style="margin-top: 12px;">
                     <i class="fa-solid fa-circle-info"></i> 로컬 FFmpeg 렌더링 경로와 편집했던 타임라인 클립 정보는 그대로 유지됩니다.
                 </div>
             </div>
             <div class="modal-footer">
                 <button id="modal-btn-cancel" class="btn btn-secondary">나중에</button>
-                <button id="modal-btn-select" class="btn btn-primary"><i class="fa-solid fa-file-audio"></i> BGM/스티커 파일 선택</button>
+                <button id="modal-btn-select" class="btn btn-primary"><i class="fa-solid fa-file-audio"></i> 이미지/음악 파일 선택</button>
             </div>
         </div>
     `;
@@ -4406,7 +4659,7 @@ function openMusicSearchModal() {
     // loadMusicKeywords 가 keywords 호출로 두 가지를 한 번에 확인한다.
     checkServerHealth().then(ok => {
         if (!ok) {
-            setMusicServerReady(false, '로컬 서버가 실행 중일 때만 음악 검색을 사용할 수 있습니다. (BGM/스티커 버튼으로 직접 추가는 가능합니다)');
+            setMusicServerReady(false, '로컬 서버가 실행 중일 때만 음악 검색을 사용할 수 있습니다. (이미지/음악 버튼으로 직접 추가는 가능합니다)');
             return;
         }
         loadMusicKeywords();
