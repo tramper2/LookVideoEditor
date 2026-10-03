@@ -12,7 +12,7 @@
     <link rel="icon" type="image/x-icon" href="favicon.ico">
     <!-- FontAwesome for icons -->
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
-    <link rel="stylesheet" href="style.css?v=2.2.9">
+    <link rel="stylesheet" href="style.css?v=2.3.0">
 </head>
 <body>
     <div class="app-container">
@@ -637,6 +637,24 @@
                     </div>
                 </div>
             </div>
+
+            <!-- 타임라인 하단 전용 횡스크롤러 네비게이터 바 -->
+            <div class="timeline-bottom-scroll-bar">
+                <button type="button" id="btn-scroll-left" class="btn-scroll-step" title="왼쪽으로 횡스크롤 (◀)">
+                    <i class="fa-solid fa-chevron-left"></i>
+                </button>
+                <div class="scroll-track-wrapper" id="timeline-scroll-track" title="클릭하거나 드래그하여 타임라인 횡스크롤">
+                    <div class="scroll-thumb" id="timeline-scroll-thumb" title="드래그하여 타임라인 좌우 횡스크롤">
+                        <span class="scroll-thumb-handle"></span>
+                    </div>
+                </div>
+                <button type="button" id="btn-scroll-right" class="btn-scroll-step" title="오른쪽으로 횡스크롤 (▶)">
+                    <i class="fa-solid fa-chevron-right"></i>
+                </button>
+                <button type="button" id="btn-scroll-playhead" class="btn-scroll-playhead" title="현재 재생헤드 위치로 화면 이동 (Ctrl + H)">
+                    <i class="fa-solid fa-crosshairs"></i> 재생헤드로
+                </button>
+            </div>
         </footer>
     </div>
 
@@ -941,8 +959,8 @@
     </div>
 
     <!-- 로직 스크립트 불러오기 -->
-    <script src="ffmpeg-generator.js?v=2.2.9"></script>
-    <script src="app.js?v=2.2.9"></script>
+    <script src="ffmpeg-generator.js?v=2.3.0"></script>
+    <script src="app.js?v=2.3.0"></script>
 </body>
 </html>
 

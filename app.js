@@ -98,6 +98,11 @@ const DOM = {
     btnTimelineCloseGaps: document.getElementById('btn-timeline-close-gaps'),
     snapGuideLine: document.getElementById('snap-guide-line'),
     timelineScrollContainer: document.getElementById('timeline-scroll-container'),
+    btnScrollLeft: document.getElementById('btn-scroll-left'),
+    btnScrollRight: document.getElementById('btn-scroll-right'),
+    btnScrollPlayhead: document.getElementById('btn-scroll-playhead'),
+    timelineScrollTrack: document.getElementById('timeline-scroll-track'),
+    timelineScrollThumb: document.getElementById('timeline-scroll-thumb'),
     timelineRuler: document.getElementById('timeline-ruler'),
     playhead: document.getElementById('playhead'),
     trackVideo1: document.getElementById('lane-video1'),
@@ -307,6 +312,9 @@ function initApp() {
 
     // 4. 패널 크기 조절 기능 초기화
     initResizablePanels();
+
+    // 5. 타임라인 하단 횡스크롤러 및 가로 탐색 초기화
+    initTimelineHorizontalScroll();
 }
 
 /**
@@ -587,7 +595,9 @@ function setupEventListeners() {
         DOM.btnPropSnapPrev.addEventListener('click', snapSelectedClipToPrev);
     }
 
-    // 타임라인 영역에서 Alt + 마우스 휠로 초정밀 줌 조절 (최대 1000px/s)
+    // 타임라인 영역 마우스 휠:
+    // 1) Alt + 휠: 초정밀 줌 조절 (최대 1000px/s)
+    // 2) 일반 휠 및 Shift+휠: 가로(횡) 스크롤로 자동 변환하여 확대 시 오른쪽 클립 즉시 확인 가능
     if (DOM.timelineScrollContainer) {
         DOM.timelineScrollContainer.addEventListener('wheel', (e) => {
             if (e.altKey) {
@@ -595,6 +605,12 @@ function setupEventListeners() {
                 const step = getTimelineZoomStep(STATE.timelineZoom);
                 const delta = e.deltaY < 0 ? step : -step;
                 setTimelineZoom(STATE.timelineZoom + delta);
+            } else {
+                // 상하 휠 회전 또는 좌우 휠 회전 시 가로 스크롤 수행
+                if (Math.abs(e.deltaY) > Math.abs(e.deltaX)) {
+                    e.preventDefault();
+                    DOM.timelineScrollContainer.scrollLeft += e.deltaY * 1.5;
+                }
             }
         }, { passive: false });
     }
@@ -626,7 +642,7 @@ function setupEventListeners() {
     }
     DOM.btnTimelineClear.addEventListener('click', clearTimeline);
     
-    // 단축키 매핑 (S: 분할, Space: 재생/일시정지, G: 앞클립 밀착, Delete: 선택된 클립 삭제, Ctrl+C: 복사, Ctrl+V: 붙여넣기, Ctrl+D: 복제, Ctrl++/-: 줌)
+    // 단축키 매핑 (S: 분할, Space: 재생/일시정지, G: 앞클립 밀착, Delete: 선택된 클립 삭제, Ctrl+C/V/D: 복사/붙여넣기/복제, Ctrl+H: 재생헤드로 이동, Home/End: 타임라인 시작/끝)
     window.addEventListener('keydown', (e) => {
         if (document.activeElement.tagName === 'INPUT' || document.activeElement.tagName === 'TEXTAREA') {
             return;
@@ -643,6 +659,19 @@ function setupEventListeners() {
         } else if (isCtrl && e.code === 'KeyD') {
             e.preventDefault();
             duplicateSelectedClip();
+        } else if (isCtrl && e.code === 'KeyH') {
+            e.preventDefault();
+            scrollToPlayhead();
+        } else if (e.code === 'Home') {
+            e.preventDefault();
+            if (DOM.timelineScrollContainer) {
+                DOM.timelineScrollContainer.scrollTo({ left: 0, behavior: 'smooth' });
+            }
+        } else if (e.code === 'End') {
+            e.preventDefault();
+            if (DOM.timelineScrollContainer) {
+                DOM.timelineScrollContainer.scrollTo({ left: DOM.timelineScrollContainer.scrollWidth, behavior: 'smooth' });
+            }
         } else if (isCtrl && (e.code === 'Equal' || e.code === 'NumpadAdd')) {
             e.preventDefault();
             const step = getTimelineZoomStep(STATE.timelineZoom);
@@ -2500,6 +2529,7 @@ function recalculateTotalDuration() {
     drawRuler();
     updateTimeDisplay();
     updateWebpBand();   // 타임라인 길이가 바뀌면 구간도 유효 범위로 다시 맞춘다
+    updateTimelineScrollBarUI();
 }
 
 // 타임라인 줌 변경
@@ -2517,7 +2547,198 @@ function updateTimelineZoom() {
     updatePlayheadPosition();
     updateWebpBand();
     drawRuler();
+    updateTimelineScrollBarUI();
 }
+
+/* ========================================================================
+   타임라인 하단 전용 횡스크롤러 네비게이터 바 & 가로 스크롤 제어
+   ======================================================================== */
+
+/**
+ * 타임라인 횡스크롤러 UI 위치 및 손잡이 크기 실시간 동기화
+ */
+function updateTimelineScrollBarUI() {
+    if (!DOM.timelineScrollContainer || !DOM.timelineScrollTrack || !DOM.timelineScrollThumb) return;
+
+    const scrollLeft = DOM.timelineScrollContainer.scrollLeft;
+    const scrollWidth = DOM.timelineScrollContainer.scrollWidth;
+    const clientWidth = DOM.timelineScrollContainer.clientWidth;
+    const trackWidth = DOM.timelineScrollTrack.clientWidth;
+
+    if (trackWidth <= 0) return;
+
+    const maxScroll = scrollWidth - clientWidth;
+
+    if (maxScroll <= 0) {
+        // 가로 스크롤이 필요 없을 때는 손잡이가 전체를 채우고 비활성화 느낌 제공
+        DOM.timelineScrollThumb.style.width = `${trackWidth}px`;
+        DOM.timelineScrollThumb.style.left = '0px';
+        DOM.timelineScrollThumb.style.opacity = '0.35';
+        DOM.timelineScrollThumb.style.pointerEvents = 'none';
+        return;
+    }
+
+    DOM.timelineScrollThumb.style.opacity = '1';
+    DOM.timelineScrollThumb.style.pointerEvents = 'auto';
+
+    // 화면에 보이는 비율만큼 손잡이 너비 계산 (최소 36px ~ 최대 trackWidth)
+    const visibleRatio = Math.min(1, clientWidth / scrollWidth);
+    const thumbWidth = Math.max(36, Math.min(trackWidth, Math.round(trackWidth * visibleRatio)));
+    const maxThumbLeft = Math.max(0, trackWidth - thumbWidth);
+
+    // 현재 scrollLeft에 따른 손잡이 left 위치 계산
+    const thumbLeft = maxScroll > 0 ? (scrollLeft / maxScroll) * maxThumbLeft : 0;
+
+    DOM.timelineScrollThumb.style.width = `${thumbWidth}px`;
+    DOM.timelineScrollThumb.style.left = `${Math.max(0, Math.min(maxThumbLeft, thumbLeft))}px`;
+}
+
+/**
+ * 현재 재생헤드 위치로 타임라인 가로 화면 부드럽게 이동
+ */
+function scrollToPlayhead() {
+    if (!DOM.timelineScrollContainer) return;
+    const playheadX = 160 + (STATE.playheadTime * STATE.timelineZoom);
+    const containerWidth = DOM.timelineScrollContainer.clientWidth;
+    const targetScrollLeft = Math.max(0, playheadX - (containerWidth / 2));
+    DOM.timelineScrollContainer.scrollTo({
+        left: targetScrollLeft,
+        behavior: 'smooth'
+    });
+}
+
+/**
+ * 타임라인 하단 횡스크롤러 인터랙션 이벤트 초기화
+ */
+function initTimelineHorizontalScroll() {
+    if (!DOM.timelineScrollContainer || !DOM.timelineScrollTrack || !DOM.timelineScrollThumb) return;
+
+    // 1. 타임라인 컨테이너의 scroll 이벤트 감지 -> 하단 손잡이 위치 실시간 동기화
+    DOM.timelineScrollContainer.addEventListener('scroll', () => {
+        updateTimelineScrollBarUI();
+    }, { passive: true });
+
+    // 2. 윈도우 창 크기 변경 시 손잡이 비율 재계산
+    window.addEventListener('resize', () => {
+        updateTimelineScrollBarUI();
+    });
+
+    // 3. 하단 손잡이(Thumb) 드래그로 타임라인 횡스크롤
+    let isDraggingThumb = false;
+    let dragStartX = 0;
+    let dragStartScrollLeft = 0;
+
+    DOM.timelineScrollThumb.addEventListener('mousedown', (e) => {
+        if (e.button !== 0) return;
+        e.preventDefault();
+        e.stopPropagation();
+
+        isDraggingThumb = true;
+        dragStartX = e.clientX;
+        dragStartScrollLeft = DOM.timelineScrollContainer.scrollLeft;
+
+        DOM.timelineScrollThumb.classList.add('dragging');
+        document.body.style.userSelect = 'none';
+
+        const onMouseMove = (moveEvent) => {
+            if (!isDraggingThumb) return;
+            const deltaX = moveEvent.clientX - dragStartX;
+            const trackWidth = DOM.timelineScrollTrack.clientWidth;
+            const thumbWidth = DOM.timelineScrollThumb.offsetWidth;
+            const maxThumbLeft = trackWidth - thumbWidth;
+            const maxScroll = DOM.timelineScrollContainer.scrollWidth - DOM.timelineScrollContainer.clientWidth;
+
+            if (maxThumbLeft > 0 && maxScroll > 0) {
+                const scrollDelta = (deltaX / maxThumbLeft) * maxScroll;
+                DOM.timelineScrollContainer.scrollLeft = Math.max(0, Math.min(maxScroll, dragStartScrollLeft + scrollDelta));
+            }
+        };
+
+        const onMouseUp = () => {
+            isDraggingThumb = false;
+            DOM.timelineScrollThumb.classList.remove('dragging');
+            document.body.style.userSelect = '';
+            window.removeEventListener('mousemove', onMouseMove);
+            window.removeEventListener('mouseup', onMouseUp);
+        };
+
+        window.addEventListener('mousemove', onMouseMove);
+        window.addEventListener('mouseup', onMouseUp);
+    });
+
+    // 4. 하단 트랙(Track) 빈 공간 클릭 시 해당 위치로 점프 스크롤
+    DOM.timelineScrollTrack.addEventListener('mousedown', (e) => {
+        if (e.button !== 0 || e.target === DOM.timelineScrollThumb || DOM.timelineScrollThumb.contains(e.target)) {
+            return;
+        }
+        const rect = DOM.timelineScrollTrack.getBoundingClientRect();
+        const clickX = e.clientX - rect.left;
+        const trackWidth = DOM.timelineScrollTrack.clientWidth;
+        const thumbWidth = DOM.timelineScrollThumb.offsetWidth;
+        const maxThumbLeft = trackWidth - thumbWidth;
+        const maxScroll = DOM.timelineScrollContainer.scrollWidth - DOM.timelineScrollContainer.clientWidth;
+
+        if (maxThumbLeft > 0 && maxScroll > 0) {
+            const targetThumbLeft = Math.max(0, Math.min(maxThumbLeft, clickX - (thumbWidth / 2)));
+            const targetScrollLeft = (targetThumbLeft / maxThumbLeft) * maxScroll;
+            DOM.timelineScrollContainer.scrollTo({
+                left: targetScrollLeft,
+                behavior: 'smooth'
+            });
+        }
+    });
+
+    // 5. 좌우 이동 버튼 (클릭 및 길게 누르면 연속 스크롤)
+    function setupStepScrollButton(btn, direction) {
+        if (!btn) return;
+        let repeatTimer = null;
+        let repeatInterval = null;
+
+        const doStep = (smooth = true) => {
+            const stepPx = 350 * direction;
+            if (smooth) {
+                DOM.timelineScrollContainer.scrollBy({ left: stepPx, behavior: 'smooth' });
+            } else {
+                DOM.timelineScrollContainer.scrollLeft += (40 * direction);
+            }
+        };
+
+        btn.addEventListener('click', () => {
+            doStep(true);
+        });
+
+        btn.addEventListener('mousedown', (e) => {
+            if (e.button !== 0) return;
+            repeatTimer = setTimeout(() => {
+                repeatInterval = setInterval(() => {
+                    doStep(false);
+                }, 25);
+            }, 300);
+        });
+
+        const stopRepeat = () => {
+            if (repeatTimer) clearTimeout(repeatTimer);
+            if (repeatInterval) clearInterval(repeatInterval);
+            repeatTimer = null;
+            repeatInterval = null;
+        };
+
+        btn.addEventListener('mouseup', stopRepeat);
+        btn.addEventListener('mouseleave', stopRepeat);
+    }
+
+    setupStepScrollButton(DOM.btnScrollLeft, -1);
+    setupStepScrollButton(DOM.btnScrollRight, 1);
+
+    // 6. [재생헤드로] 버튼
+    if (DOM.btnScrollPlayhead) {
+        DOM.btnScrollPlayhead.addEventListener('click', scrollToPlayhead);
+    }
+
+    // 초기 상태 동기화
+    setTimeout(updateTimelineScrollBarUI, 100);
+}
+
 
 /* ========================================================================
    WebP 내보내기 구간 밴드 (최대 5초)
@@ -4427,6 +4648,7 @@ function updateRenderModalUI(data) {
     else DOM.renderMetaRes.textContent = `${STATE.outputWidth} x ${STATE.outputHeight}`;
 
     if (data.status === 'completed') {
+        DOM.renderModal.classList.add('render-finished');
         DOM.renderSpinner.classList.add('hide');
         DOM.renderCompleteActions.classList.remove('hide');
         DOM.renderOutputFilename.textContent = data.outputFile || STATE.activeRenderOutput;
@@ -4570,6 +4792,7 @@ function updateRenderModalUI(data) {
 }
 
 function openRenderModal() {
+    DOM.renderModal.classList.remove('render-finished');
     DOM.renderModal.classList.remove('hide');
     DOM.renderModal.classList.add('show');
     

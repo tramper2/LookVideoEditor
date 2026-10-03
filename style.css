@@ -1265,6 +1265,9 @@ body.resizing-row {
     opacity: 0;
     pointer-events: none;
     transition: opacity 0.25s ease;
+    padding: 16px;
+    box-sizing: border-box;
+    overflow-y: auto;
 }
 
 .modal-overlay.show,
@@ -1285,8 +1288,11 @@ body.resizing-row {
     border-radius: 14px;
     width: 90%;
     max-width: 480px;
+    max-height: calc(100vh - 32px);
     box-shadow: 0 20px 60px rgba(0, 0, 0, 0.8);
     overflow: hidden;
+    display: flex;
+    flex-direction: column;
     animation: modalPop 0.25s cubic-bezier(0.175, 0.885, 0.32, 1.275);
 }
 
@@ -1296,16 +1302,17 @@ body.resizing-row {
 }
 
 .modal-header {
-    padding: 16px 20px;
-    background: rgba(0, 0, 0, 0.2);
+    padding: 12px 18px;
+    background: rgba(0, 0, 0, 0.25);
     border-bottom: 1px solid var(--border-color);
     display: flex;
     align-items: center;
     justify-content: space-between;
+    flex-shrink: 0;
 }
 
 .modal-header h3 {
-    font-size: 1rem;
+    font-size: 0.98rem;
     font-weight: 700;
 }
 
@@ -1323,22 +1330,36 @@ body.resizing-row {
 }
 
 .modal-body {
-    padding: 20px;
+    padding: 14px 18px;
+    overflow-y: auto;
+    flex: 1 1 auto;
+    scrollbar-width: thin;
+    scrollbar-color: rgba(255, 255, 255, 0.2) transparent;
+}
+
+.modal-body::-webkit-scrollbar {
+    width: 6px;
+}
+.modal-body::-webkit-scrollbar-thumb {
+    background: rgba(255, 255, 255, 0.2);
+    border-radius: 3px;
 }
 
 .modal-footer {
-    padding: 14px 20px;
-    background: rgba(0, 0, 0, 0.2);
+    padding: 10px 18px;
+    background: rgba(0, 0, 0, 0.25);
     border-top: 1px solid var(--border-color);
     display: flex;
     justify-content: flex-end;
-    flex-wrap: wrap;              /* 버튼이 많으면 압축하지 말고 줄바꿈 (렌더 모달은 6개) */
-    gap: 10px;
+    flex-wrap: wrap;              /* 버튼이 많으면 압축하지 말고 줄바꿈 */
+    gap: 8px;
+    flex-shrink: 0;
 }
 
 /* Render Modal Custom Styling */
 .render-modal-content {
     max-width: 520px;
+    max-height: calc(100vh - 32px);
     background: #141419;
     border: 1px solid rgba(255, 65, 108, 0.2);
     box-shadow: 0 20px 60px rgba(0, 0, 0, 0.9), 0 0 30px rgba(255, 65, 108, 0.1);
@@ -1463,8 +1484,8 @@ body.resizing-row {
     background: rgba(0, 230, 118, 0.08);
     border: 1px solid rgba(0, 230, 118, 0.25);
     border-radius: 10px;
-    padding: 14px 16px;
-    margin-top: 14px;
+    padding: 10px 14px;
+    margin-top: 8px;
 }
 
 .success-banner {
@@ -1473,17 +1494,18 @@ body.resizing-row {
     gap: 8px;
     color: var(--success);
     font-weight: 600;
-    font-size: 0.92rem;
-    margin-bottom: 6px;
+    font-size: 0.88rem;
+    margin-bottom: 4px;
 }
 
 .output-file-info {
-    font-size: 0.78rem;
+    font-size: 0.74rem;
     color: var(--text-muted);
     word-break: break-all;
     display: flex;
     align-items: center;
     gap: 6px;
+    margin-top: 6px;
 }
 
 .output-file-name {
@@ -1493,14 +1515,14 @@ body.resizing-row {
 }
 
 .rendered-video-preview-wrapper {
-    margin: 12px 0;
+    margin: 8px 0;
     width: 100%;
-    max-height: 260px;
+    max-height: 180px;
     background: #000000;
     border-radius: 8px;
     overflow: hidden;
     border: 1px solid rgba(255, 255, 255, 0.15);
-    box-shadow: 0 6px 24px rgba(0, 0, 0, 0.6);
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.6);
     display: flex;
     justify-content: center;
     align-items: center;
@@ -1508,10 +1530,37 @@ body.resizing-row {
 
 .rendered-result-video {
     width: 100%;
-    max-height: 260px;
+    max-height: 180px;
     object-fit: contain;
     outline: none;
     background: #000000;
+}
+
+/* 렌더 완료 후 불필요한 스피너/프로그레스바 숨김 및 세로 높이 컴팩트 최적화 */
+.render-finished .render-status-box {
+    display: none;
+}
+.render-finished .render-progress-wrapper {
+    display: none;
+}
+.render-finished .render-meta-grid {
+    grid-template-columns: repeat(4, 1fr);
+    gap: 6px;
+    margin-bottom: 8px;
+}
+.render-finished .meta-item {
+    padding: 4px 6px;
+    text-align: center;
+}
+.render-finished .meta-label {
+    font-size: 0.62rem;
+    margin-bottom: 1px;
+}
+.render-finished .meta-value {
+    font-size: 0.74rem;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
 }
 
 /* Hidden Utility Elements (DOM에 실존해야 브라우저 하드웨어 비디오 디코더가 활성화됨) */
@@ -2563,3 +2612,138 @@ body.resizing-row {
     box-shadow: 0 0 6px rgba(168, 85, 247, 0.3);
 }
 
+/* ========================================================================
+   타임라인 하단 전용 횡스크롤러 네비게이터 바 & 가로 스크롤 강화
+   ======================================================================== */
+.timeline-bottom-scroll-bar {
+    height: 30px;
+    background: #111115;
+    border-top: 1px solid var(--border-color);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 0 12px;
+    user-select: none;
+    z-index: 45;
+    flex-shrink: 0;
+}
+
+.btn-scroll-step {
+    background: rgba(255, 255, 255, 0.06);
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    color: var(--text-muted);
+    width: 26px;
+    height: 22px;
+    border-radius: 4px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    font-size: 11px;
+    transition: all 0.15s ease;
+}
+
+.btn-scroll-step:hover {
+    background: rgba(255, 65, 108, 0.25);
+    color: #ffffff;
+    border-color: #ff416c;
+}
+
+.btn-scroll-step:active {
+    transform: scale(0.92);
+}
+
+.scroll-track-wrapper {
+    flex: 1;
+    height: 14px;
+    background: rgba(0, 0, 0, 0.55);
+    border-radius: 7px;
+    position: relative;
+    cursor: pointer;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.scroll-thumb {
+    position: absolute;
+    top: 1px;
+    bottom: 1px;
+    left: 0;
+    width: 80px;
+    min-width: 32px;
+    background: linear-gradient(135deg, rgba(255, 65, 108, 0.8), rgba(255, 75, 43, 0.95));
+    border-radius: 6px;
+    cursor: grab;
+    box-shadow: 0 1px 4px rgba(0, 0, 0, 0.6), inset 0 1px 0 rgba(255, 255, 255, 0.35);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: background 0.15s ease, box-shadow 0.15s ease;
+}
+
+.scroll-thumb:hover {
+    background: linear-gradient(135deg, #ff416c, #ff4b2b);
+    box-shadow: 0 0 8px rgba(255, 65, 108, 0.6);
+}
+
+.scroll-thumb:active,
+.scroll-thumb.dragging {
+    cursor: grabbing;
+    background: #ff416c;
+    box-shadow: 0 0 12px rgba(255, 65, 108, 0.9);
+}
+
+.scroll-thumb-handle {
+    width: 18px;
+    height: 3px;
+    background: rgba(255, 255, 255, 0.85);
+    border-radius: 2px;
+    pointer-events: none;
+}
+
+.btn-scroll-playhead {
+    background: rgba(0, 229, 255, 0.12);
+    border: 1px solid rgba(0, 229, 255, 0.35);
+    color: #00e5ff;
+    height: 22px;
+    padding: 0 10px;
+    border-radius: 4px;
+    font-size: 0.72rem;
+    font-weight: 600;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    white-space: nowrap;
+    transition: all 0.15s ease;
+}
+
+.btn-scroll-playhead:hover {
+    background: rgba(0, 229, 255, 0.25);
+    border-color: #00e5ff;
+    box-shadow: 0 0 8px rgba(0, 229, 255, 0.4);
+}
+
+.btn-scroll-playhead:active {
+    transform: scale(0.95);
+}
+
+/* 타임라인 트랙 영역의 네이티브 가로 스크롤바도 두껍고 뚜렷하게 지원 */
+.timeline-tracks-container::-webkit-scrollbar {
+    height: 10px;
+    width: 8px;
+}
+
+.timeline-tracks-container::-webkit-scrollbar-track {
+    background: #09090b;
+    border-top: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.timeline-tracks-container::-webkit-scrollbar-thumb {
+    background: rgba(255, 65, 108, 0.4);
+    border-radius: 5px;
+    border: 2px solid #09090b;
+}
+
+.timeline-tracks-container::-webkit-scrollbar-thumb:hover {
+    background: #ff416c;
+}

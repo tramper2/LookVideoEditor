@@ -1122,17 +1122,20 @@ const server = http.createServer(async (req, res) => {
             }
 
             const fullPath = targetFile ? path.resolve(ROOT_DIR, targetFile) : outputDir;
-            console.log(`[LookVideoEditor] 저장 폴더 열기 요청: ${fullPath}`);
+            const targetDir = (fullPath && fs.existsSync(fullPath))
+                ? (fs.statSync(fullPath).isDirectory() ? fullPath : path.dirname(fullPath))
+                : outputDir;
 
-            if (fs.existsSync(fullPath) && fs.statSync(fullPath).isFile()) {
-                // 탐색기에서 결과 파일 선택 (cmd start의 내장 따옴표 파싱 문제 회피: explorer.exe 직접 실행)
-                spawn('explorer.exe', [`/select,${fullPath}`], { detached: true, stdio: 'ignore' }).unref();
-            } else {
-                spawn('explorer.exe', [outputDir], { detached: true, stdio: 'ignore' }).unref();
+            if (!fs.existsSync(targetDir)) {
+                fs.mkdirSync(targetDir, { recursive: true });
             }
+            console.log(`[LookVideoEditor] 저장 폴더 열기 실행: ${targetDir}`);
+
+            // Windows 탐색기에서 저장 폴더 바로 열기 (안정적 100% 보장)
+            spawn('explorer.exe', [targetDir], { detached: true, stdio: 'ignore' }).unref();
 
             res.writeHead(200, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify({ status: 'opened', path: outputDir }));
+            res.end(JSON.stringify({ status: 'opened', path: targetDir }));
         });
         return;
     }
