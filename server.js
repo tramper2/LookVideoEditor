@@ -1726,6 +1726,98 @@ const server = http.createServer(async (req, res) => {
         return;
     }
 
+    // 16. 비디오에서 오디오 분리 및 추출 (/api/audio/extract)
+    if (pathname === '/api/audio/extract' && req.method === 'POST') {
+        let body = '';
+        req.on('data', chunk => { body += chunk; });
+        req.on('end', () => {
+            try {
+                const data = JSON.parse(body || '{}');
+                const { videoPath, filename } = data;
+
+                let resolvedVideoPath = null;
+                if (videoPath) {
+                    try {
+                        const p = path.resolve(videoPath);
+                        if (fs.existsSync(p) && fs.statSync(p).isFile()) {
+                            resolvedVideoPath = p;
+                        }
+                    } catch (e) {}
+                }
+
+                // source 폴더 또는 ROOT_DIR에서 파일명으로 탐색
+                if (!resolvedVideoPath && filename) {
+                    const candidateInSource = path.join(ROOT_DIR, 'source', filename);
+                    if (fs.existsSync(candidateInSource)) {
+                        resolvedVideoPath = candidateInSource;
+                    } else {
+                        const candidateInRoot = path.join(ROOT_DIR, filename);
+                        if (fs.existsSync(candidateInRoot)) {
+                            resolvedVideoPath = candidateInRoot;
+                        }
+                    }
+                }
+
+                if (!resolvedVideoPath) {
+                    res.writeHead(400, { 'Content-Type': 'application/json' });
+                    res.end(JSON.stringify({ success: false, error: '유효한 비디오 파일을 찾을 수 없습니다.' }));
+                    return;
+                }
+
+                // 추출 오디오 파일 저장 위치: source 폴더
+                const sourceDir = path.join(ROOT_DIR, 'source');
+                if (!fs.existsSync(sourceDir)) {
+                    fs.mkdirSync(sourceDir, { recursive: true });
+                }
+
+                const baseName = path.basename(resolvedVideoPath, path.extname(resolvedVideoPath)).replace(/[\/\\:*?"<>|]/g, '_');
+                let targetAudioFilename = `${baseName}_audio.mp3`;
+                let outputPath = path.join(sourceDir, targetAudioFilename);
+                let counter = 1;
+                while (fs.existsSync(outputPath)) {
+                    targetAudioFilename = `${baseName}_audio_${counter}.mp3`;
+                    outputPath = path.join(sourceDir, targetAudioFilename);
+                    counter++;
+                }
+
+                const ffmpegBin = getFFmpegBinary();
+                // MP3 고음질 추출 (192kbps)
+                const args = ['-y', '-i', resolvedVideoPath, '-vn', '-c:a', 'libmp3lame', '-b:a', '192k', outputPath];
+                console.log(`[LookVideoEditor] 오디오 분리 추출 시작: ${ffmpegBin} ${args.join(' ')}`);
+
+                const child = spawn(ffmpegBin, args);
+                let stderr = '';
+                child.stderr.on('data', d => { stderr += d.toString('utf8'); });
+
+                child.on('close', code => {
+                    if (code === 0 && fs.existsSync(outputPath)) {
+                        console.log(`[LookVideoEditor] 오디오 분리 추출 성공: ${outputPath}`);
+                        res.writeHead(200, { 'Content-Type': 'application/json' });
+                        res.end(JSON.stringify({
+                            success: true,
+                            filename: targetAudioFilename,
+                            audioPath: outputPath,
+                            url: `/source/${encodeURIComponent(targetAudioFilename)}`
+                        }));
+                    } else {
+                        console.warn(`[LookVideoEditor] 오디오 추출 실패(코드 ${code}):`, stderr.slice(-300));
+                        res.writeHead(500, { 'Content-Type': 'application/json' });
+                        res.end(JSON.stringify({ success: false, error: `오디오 추출 실패(코드 ${code}): ${stderr.slice(-200)}` }));
+                    }
+                });
+
+                child.on('error', err => {
+                    console.error('[LookVideoEditor] FFmpeg 실행 에러:', err);
+                    res.writeHead(500, { 'Content-Type': 'application/json' });
+                    res.end(JSON.stringify({ success: false, error: err.message }));
+                });
+            } catch (err) {
+                res.writeHead(500, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ success: false, error: err.message }));
+            }
+        });
+        return;
+    }
 
     // --- 정적 파일 서빙 (HTTP 206 Partial Content 비디오 스트리밍 지원) ---
     let safePath = path.normalize(pathname).replace(/^(\.\.[\/\\])+/, '');

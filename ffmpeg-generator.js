@@ -302,8 +302,9 @@ function generateFFmpegCommand(projectState) {
         const aProcessed = `a1_delayed_${inputIdx}`;
         
         filterComplex.push(`[${inputIdx}:v]${vFilters.join(",")}[${vProcessed}]`);
-        // 정지 이미지 입력에는 오디오 스트림이 없다. [N:a] 를 참조하면 그래프가 통째로 깨진다.
-        if (!isStill) {
+        // 정지 이미지 입력 또는 음소거(영상 전용) 클립은 오디오 스트림을 믹싱하지 않는다
+        const isMuted = clip.muteAudio === true || (clip.volume !== undefined && clip.volume <= 0.001);
+        if (!isStill && !isMuted) {
             filterComplex.push(`[${inputIdx}:a]${aFilters.join(",")}[${aProcessed}]`);
         }
 
@@ -313,8 +314,8 @@ function generateFFmpegCommand(projectState) {
         filterComplex.push(`[${currentVideoNode}][${vProcessed}]overlay=x=0:y=0:enable='between(t,${clip.timelineStart.toFixed(2)},${endTimeline.toFixed(2)})'[${nextVideoNode}]`);
         currentVideoNode = nextVideoNode;
 
-        // 정지 이미지는 소리가 없으므로 amix 입력에 넣지 않는다 (aFilters 는 쓰이지 않는다)
-        if (!isStill) {
+        // 정지 이미지 및 음소거된 비디오는 소리가 없으므로 amix 입력에 넣지 않는다
+        if (!isStill && !isMuted) {
             audioMixInputs.push(`[${aProcessed}]`);
         }
     });
@@ -384,11 +385,14 @@ function generateFFmpegCommand(projectState) {
             aFilters.push(`adelay=${delayMs}|${delayMs}`);
         }
         
+        const isMuted = clip.muteAudio === true || (clip.volume !== undefined && clip.volume <= 0.001);
         const vProcessed = `v2_processed_${inputIdx}`;
         const aDelayed = `a2_delayed_${inputIdx}`;
         
         filterComplex.push(`[${inputIdx}:v]${vFilters.join(",")}[${vProcessed}]`);
-        filterComplex.push(`[${inputIdx}:a]${aFilters.join(",")}[${aDelayed}]`);
+        if (!isMuted) {
+            filterComplex.push(`[${inputIdx}:a]${aFilters.join(",")}[${aDelayed}]`);
+        }
         
         // 오버레이 합성 (출현 구간 설정)
         const nextVideoNode = `v_overlay_${inputIdx}`;
@@ -396,12 +400,17 @@ function generateFFmpegCommand(projectState) {
         filterComplex.push(`[${currentVideoNode}][${vProcessed}]overlay=x=${pipX}:y=${pipY}:enable='between(t,${clip.timelineStart.toFixed(2)},${endTimeline.toFixed(2)})'[${nextVideoNode}]`);
         currentVideoNode = nextVideoNode;
         
-        audioMixInputs.push(`[${aDelayed}]`);
+        if (!isMuted) {
+            audioMixInputs.push(`[${aDelayed}]`);
+        }
     });
     
-    // 3. Audio Track (BGM) 오디오 딜레이 및 믹싱 대기
+    // 3. Audio Track (BGM 및 분리된 오디오) 오디오 딜레이 및 믹싱 대기
     audioMappings.forEach((mapping, i) => {
         const { clip, inputIdx } = mapping;
+        const isMuted = clip.muteAudio === true || (clip.volume !== undefined && clip.volume <= 0.001);
+        if (isMuted) return;
+
         let aFilters = [];
         const vol = clip.volume !== undefined ? clip.volume : 1.0;
         aFilters.push(`volume=${vol}`);

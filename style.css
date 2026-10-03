@@ -2513,3 +2513,53 @@ body.resizing-row {
     margin-left: 4px;
     pointer-events: none;
 }
+
+/* 타임라인 클립의 오디오 음소거(영상 전용) 배지 */
+.clip-mute-badge {
+    font-size: 0.55rem;
+    font-weight: 700;
+    background: rgba(239, 68, 68, 0.25);
+    color: #f87171;
+    border: 1px solid rgba(239, 68, 68, 0.4);
+    padding: 1px 5px;
+    border-radius: 3px;
+    margin-left: 4px;
+    pointer-events: none;
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+}
+
+/* 자석 스냅 감지 가이드라인 (앞뒤 클립 맞붙이기 시 시각적 표시) */
+.snap-guide-line {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    width: 2px;
+    background: #00e5ff;
+    box-shadow: 0 0 8px #00e5ff, 0 0 16px rgba(0, 229, 255, 0.6);
+    z-index: 100;
+    pointer-events: none;
+    transition: opacity 0.15s ease;
+}
+.snap-guide-line.hide {
+    display: none;
+}
+
+/* 타임라인 클립 자동 크로스디졸브 트랜지션 중복 배지 */
+.clip-transition-badge {
+    font-size: 0.58rem;
+    font-weight: 700;
+    background: rgba(168, 85, 247, 0.35);
+    color: #c084fc;
+    border: 1px solid rgba(168, 85, 247, 0.6);
+    padding: 1px 5px;
+    border-radius: 3px;
+    margin-left: 4px;
+    pointer-events: none;
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    box-shadow: 0 0 6px rgba(168, 85, 247, 0.3);
+}
+

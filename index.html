@@ -268,12 +268,15 @@
                         <!-- 재생 시간 설정 (트리밍) -->
                         <div class="property-row">
                             <div class="property-group">
-                                <label>타임라인 시작 시간 (초)</label>
-                                <input type="number" id="prop-timeline-start" step="0.1" min="0">
+                                <label style="display: flex; justify-content: space-between; align-items: center;">
+                                    <span>타임라인 시작 시간 (초)</span>
+                                    <button type="button" id="btn-prop-snap-prev" class="btn btn-xs btn-outline-info" style="font-size: 10px; padding: 1px 5px;" title="바로 앞 클립 끝에 빈틈 없이 딱 맞붙입니다. (G)"><i class="fa-solid fa-angles-left"></i> 앞클립 밀착</button>
+                                </label>
+                                <input type="number" id="prop-timeline-start" step="0.001" min="0">
                             </div>
                             <div class="property-group">
                                 <label>출력 지속 시간 (초)</label>
-                                <input type="number" id="prop-duration" step="0.1" min="0.1">
+                                <input type="number" id="prop-duration" step="0.001" min="0.01">
                             </div>
                         </div>
 
@@ -299,6 +302,17 @@
                                     <option value="180">180도 뒤집기</option>
                                     <option value="270">좌측으로 90도 회전</option>
                                 </select>
+                            </div>
+
+                            <div class="property-group" style="background: rgba(56, 189, 248, 0.08); border: 1px solid rgba(56, 189, 248, 0.25); border-radius: 6px; padding: 8px 10px; margin-bottom: 10px;">
+                                <label style="color: #38bdf8; font-weight: 600; font-size: 0.75rem; margin-bottom: 6px;"><i class="fa-solid fa-volume-high"></i> 오디오 / 비디오 분리 제어</label>
+                                <button type="button" id="btn-prop-separate-audio" class="btn btn-sm btn-outline-info" style="width: 100%; margin-bottom: 6px;" title="이 영상에서 오디오를 떼어내어 아래 오디오 트랙에 독립 클립으로 만듭니다.">
+                                    <i class="fa-solid fa-scissors"></i> 이 영상에서 오디오 분리
+                                </button>
+                                <label class="webp-checkbox-row" style="margin-bottom: 0;">
+                                    <input type="checkbox" id="prop-video-mute-audio">
+                                    <span><strong>오디오 음소거 (영상만 사용)</strong></span>
+                                </label>
                             </div>
 
                             <div class="property-group">
@@ -485,8 +499,9 @@
                         </div>
 
                         <!-- 삭제 액션 (값 변경은 입력 이벤트로 실시간 자동 반영) -->
-                        <div class="property-actions">
-                            <button id="btn-delete-clip" class="btn btn-block btn-danger"><i class="fa-solid fa-trash"></i> 클립 삭제</button>
+                        <div class="property-actions" style="display: flex; gap: 8px;">
+                            <button type="button" id="btn-duplicate-clip" class="btn btn-secondary" style="flex: 1;" title="이 클립을 바로 복제합니다. (Ctrl+D)"><i class="fa-solid fa-copy"></i> 클립 복제</button>
+                            <button type="button" id="btn-delete-clip" class="btn btn-danger" style="flex: 1;"><i class="fa-solid fa-trash"></i> 클립 삭제</button>
                         </div>
                     </div>
                 </div>
@@ -503,6 +518,21 @@
                 <div class="toolbar-left">
                     <button id="btn-timeline-split" class="btn btn-sm btn-secondary" title="선택된 비디오/오디오 클립을 재생 헤드 위치에서 분할합니다. (S)">
                         <i class="fa-solid fa-scissors"></i> 분할하기 (Split)
+                    </button>
+                    <button id="btn-timeline-duplicate" class="btn btn-sm btn-secondary" title="선택된 클립을 바로 복제합니다. (단축키: Ctrl+D / 복사: Ctrl+C, 붙여넣기: Ctrl+V)">
+                        <i class="fa-solid fa-copy"></i> 복사/복제
+                    </button>
+                    <button id="btn-timeline-separate-audio" class="btn btn-sm btn-secondary" title="선택된 비디오 클립에서 오디오를 분리하여 오디오 트랙으로 배치합니다.">
+                        <i class="fa-solid fa-volume-high"></i> 오디오 분리
+                    </button>
+                    <button id="btn-toggle-snap" class="btn btn-sm btn-outline-info active" title="자석 스냅 켜기/끄기 (클립 드래그 및 트리밍 시 앞뒤 클립 끝점과 재생헤드에 착 달라붙음)">
+                        <i class="fa-solid fa-magnet"></i> 스냅 ON
+                    </button>
+                    <button id="btn-timeline-snap-prev" class="btn btn-sm btn-outline-info" title="선택된 클립을 바로 앞 클립 끝에 빈틈 없이 딱 맞붙입니다. (단축키: G)">
+                        <i class="fa-solid fa-angles-left"></i> 앞클립 밀착 (G)
+                    </button>
+                    <button id="btn-timeline-close-gaps" class="btn btn-sm btn-secondary" title="이 트랙에 있는 클립들의 모든 빈틈(공백)을 없애고 차례대로 맞붙입니다.">
+                        <i class="fa-solid fa-compress"></i> 빈틈 없애기
                     </button>
                     <button id="btn-add-text-clip" class="btn btn-sm btn-primary" title="타임라인 재생헤드 현재 위치에 새 자막(텍스트) 클립을 추가합니다.">
                         <i class="fa-solid fa-plus-circle"></i> 자막 추가
@@ -522,10 +552,12 @@
                         <i class="fa-solid fa-trash-can"></i> 전체 비우기
                     </button>
                 </div>
-                <!-- 타임라인 줌 제어 -->
+                <!-- 타임라인 줌 제어 (최대 1000px/s 초정밀 확대 지원) -->
                 <div class="toolbar-right">
                     <span class="zoom-label"><i class="fa-solid fa-magnifying-glass"></i> 타임라인 줌:</span>
-                    <input type="range" id="timeline-zoom" min="5" max="50" step="1" value="15" title="타임라인 폭 확대/축소">
+                    <button type="button" id="btn-zoom-out" class="btn btn-xs btn-secondary" style="padding: 2px 6px; font-size: 10px;" title="줌 축소 (Ctrl + -)"><i class="fa-solid fa-minus"></i></button>
+                    <input type="range" id="timeline-zoom" min="5" max="1000" step="1" value="15" title="타임라인 폭 확대/축소 (5px/s ~ 1000px/s, Alt + 마우스 휠 지원)">
+                    <button type="button" id="btn-zoom-in" class="btn btn-xs btn-secondary" style="padding: 2px 6px; font-size: 10px;" title="줌 확대 (Ctrl + +)"><i class="fa-solid fa-plus"></i></button>
                     <span id="zoom-value">15 px/s</span>
                 </div>
             </div>
@@ -541,6 +573,9 @@
                 </div>
 
                 <div class="tracks-content">
+                    <!-- 자석 스냅 감지 세로 가이드라인 인디케이터 -->
+                    <div id="snap-guide-line" class="snap-guide-line hide"></div>
+
                     <!-- 타임라인 재생 헤드 -->
                     <div id="playhead" class="playhead">
                         <div class="playhead-handle"></div>
