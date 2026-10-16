@@ -81,16 +81,30 @@
                     <h2><i class="fa-solid fa-photo-film"></i> 미디어 라이브러리</h2>
                 </div>
                 <div class="panel-body">
-                    <!-- 이미지/음악 파일 추가용 숨김 input (영상은 릴스 폴더 선택으로 로드) -->
-                    <input type="file" id="input-media" multiple accept="audio/*,image/png,image/jpeg,image/webp,image/gif,image/bmp" style="display:none;">
+                    <!-- 이미지/영상/음악 파일 추가용 숨김 input -->
+                    <input type="file" id="input-media" multiple accept="video/mp4,video/quicktime,video/webm,video/x-msvideo,video/x-matroska,video/*,audio/*,image/png,image/jpeg,image/webp,image/gif,image/bmp,image/*" style="display:none;">
                     <!-- 외부 비디오 파일 브라우저 fallback 선택용 숨김 input -->
                     <input type="file" id="input-external-video-files" multiple accept="video/mp4,video/quicktime,video/webm,video/x-msvideo,video/x-matroska,video/*" style="display:none;">
+
+                    <!-- 통합 드래그 앤 드롭 업로드 존 -->
+                    <div class="media-dropzone" id="media-dropzone" title="PC의 이미지 및 동영상 파일(또는 폴더)을 여기에 끌어다 놓으세요. 클릭하여 직접 선택할 수도 있습니다.">
+                        <div class="dropzone-icon">
+                            <i class="fa-solid fa-cloud-arrow-up"></i>
+                        </div>
+                        <div class="dropzone-content">
+                            <div class="dropzone-title">미디어 파일 드래그 & 드롭</div>
+                            <div class="dropzone-desc">여러 폴더의 이미지 · 영상 · 음악을 여기에 놓으세요</div>
+                        </div>
+                    </div>
 
                     <!-- 릴스 불러오기 (룩북 스튜디오 및 외부 영상 로드) -->
                     <div class="reels-import-section">
                         <div class="reels-header">
                             <h3><i class="fa-solid fa-clapperboard"></i> 릴스 / 영상</h3>
                             <div class="reels-header-actions">
+                                <button id="btn-unload-reels" class="btn btn-xs btn-outline-warning" title="기본 로드된 릴스 목록 언로드 (숨김/비우기)">
+                                    <i class="fa-solid fa-eject"></i> 언로드
+                                </button>
                                 <button id="btn-open-external-video" class="btn btn-xs btn-primary" title="PC의 외부 동영상 파일/폴더 불러오기">
                                     <i class="fa-solid fa-folder-plus"></i> 외부 영상
                                 </button>
@@ -139,8 +153,11 @@
                         <div class="asset-list-header">
                             <h3>가져온 미디어 목록</h3>
                             <div class="asset-header-actions">
-                                <button id="btn-add-bgm-sticker" class="btn btn-xs btn-outline" title="이미지(PNG/JPG/WebP/GIF/BMP) 또는 음악 파일 추가 — 탐색기에서 끌어다 놓아도 됩니다">
-                                    <i class="fa-solid fa-plus"></i> 이미지/음악
+                                <button id="btn-clear-assets" class="btn btn-xs btn-outline-danger" title="가져온 미디어 목록 전체 비우기 (언로드)">
+                                    <i class="fa-solid fa-trash-can"></i> 전체 비우기
+                                </button>
+                                <button id="btn-add-bgm-sticker" class="btn btn-xs btn-outline" title="이미지/영상/음악 파일 직접 추가 — 탐색기에서 끌어다 놓아도 됩니다">
+                                    <i class="fa-solid fa-plus"></i> 파일 추가
                                 </button>
                                 <button id="btn-search-music" class="btn btn-xs btn-primary" title="무료 음악(CC0/퍼블릭 도메인)을 검색해서 바로 트랙에 추가">
                                     <i class="fa-solid fa-magnifying-glass"></i> 음악 검색
@@ -149,7 +166,7 @@
                         </div>
                         <ul id="asset-list" class="asset-list">
                             <!-- JS를 통해 동적 생성 -->
-                            <li class="empty-list-msg">미디어 파일이 없습니다.</li>
+                            <li class="empty-list-msg">미디어 파일이 없습니다. (위 드롭존에 파일을 놓으세요)</li>
                         </ul>
                     </div>
 
@@ -494,6 +511,48 @@
                                     <label>세로(Y) 위치 (px)</label>
                                     <input type="number" id="prop-text-y" min="0" max="1920" value="900">
                                     <span class="sub-text">화면 위에서부터의 거리</span>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- 크로마키 (단색 배경 투명화) 설정 섹션 (오버레이 및 PIP 클립 적용) -->
+                        <div id="chromakey-properties-section" class="highlight-group chromakey-section hide">
+                            <div class="chromakey-header-row">
+                                <h4 class="chromakey-title"><i class="fa-solid fa-wand-magic-sparkles"></i> 단색 배경 크로마키 (투명화)</h4>
+                                <label class="webp-checkbox-row chromakey-toggle-label">
+                                    <input type="checkbox" id="prop-chromakey-enable">
+                                    <span><strong>크로마키 ON</strong></span>
+                                </label>
+                            </div>
+                            <div id="chromakey-controls-body" class="chromakey-controls-body hide">
+                                <div class="property-group">
+                                    <label class="chroma-label-row">
+                                        <span>제거할 배경 색상 (Key Color)</span>
+                                        <button type="button" id="btn-chromakey-eyedropper" class="btn btn-xs btn-outline-info" title="프리뷰 화면을 클릭하여 배경색을 직접 추출합니다">
+                                            <i class="fa-solid fa-eye-dropper"></i> 스포이드
+                                        </button>
+                                    </label>
+                                    <div class="chromakey-color-picker-row">
+                                        <input type="color" id="prop-chromakey-color" value="#00ff00" class="chroma-color-input" title="제거할 배경 단색 선택">
+                                        <input type="text" id="prop-chromakey-color-text" value="#00ff00" class="chroma-color-text" maxlength="7" placeholder="#00FF00">
+                                        <div class="chromakey-presets">
+                                            <button type="button" class="btn-chroma-preset" data-color="#00ff00" style="background:#00ff00;" title="그린스크린 (초록)"></button>
+                                            <button type="button" class="btn-chroma-preset" data-color="#0000ff" style="background:#0000ff;" title="블루스크린 (파랑)"></button>
+                                            <button type="button" class="btn-chroma-preset" data-color="#000000" style="background:#000000; border:1px solid #555;" title="검정 배경"></button>
+                                            <button type="button" class="btn-chroma-preset" data-color="#ffffff" style="background:#ffffff; border:1px solid #555;" title="흰색 배경"></button>
+                                            <button type="button" class="btn-chroma-preset" data-color="#ff00ff" style="background:#ff00ff;" title="마젠타 배경"></button>
+                                        </div>
+                                    </div>
+                                </div>
+                                <div class="property-row">
+                                    <div class="property-group">
+                                        <label>유사도 (오차 범위: <span id="prop-chromakey-sim-label">25</span>%)</label>
+                                        <input type="range" id="prop-chromakey-sim" min="1" max="100" value="25" title="배경 색상과 유사한 색상까지 제거하는 범위">
+                                    </div>
+                                    <div class="property-group">
+                                        <label>경계 부드러움 (<span id="prop-chromakey-blend-label">5</span>%)</label>
+                                        <input type="range" id="prop-chromakey-blend" min="0" max="50" value="5" title="제거 경계면을 부드럽게 페더링">
+                                    </div>
                                 </div>
                             </div>
                         </div>

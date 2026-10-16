@@ -2747,3 +2747,310 @@ body.resizing-row {
 .timeline-tracks-container::-webkit-scrollbar-thumb:hover {
     background: #ff416c;
 }
+
+/* ========================================================================
+   통합 미디어 드래그 & 드롭 존 (Media Dropzone)
+   ======================================================================== */
+.media-dropzone {
+    border: 2px dashed rgba(255, 65, 108, 0.35);
+    background: rgba(255, 65, 108, 0.04);
+    border-radius: 8px;
+    padding: 12px 10px;
+    margin-bottom: 12px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    cursor: pointer;
+    transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+    position: relative;
+    user-select: none;
+}
+
+.media-dropzone:hover {
+    border-color: var(--primary);
+    background: rgba(255, 65, 108, 0.09);
+    box-shadow: 0 0 12px rgba(255, 65, 108, 0.2);
+    transform: translateY(-1px);
+}
+
+.media-dropzone.dragover,
+.media-dropzone.dragover-lane {
+    border-color: #00e5ff !important;
+    background: rgba(0, 229, 255, 0.12) !important;
+    box-shadow: 0 0 20px rgba(0, 229, 255, 0.4) !important;
+    transform: scale(1.02);
+}
+
+.dropzone-icon {
+    width: 36px;
+    height: 36px;
+    border-radius: 8px;
+    background: rgba(255, 65, 108, 0.15);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 1.1rem;
+    color: var(--primary);
+    flex-shrink: 0;
+    transition: all 0.2s ease;
+}
+
+.media-dropzone:hover .dropzone-icon,
+.media-dropzone.dragover .dropzone-icon {
+    background: var(--primary);
+    color: #fff;
+    transform: scale(1.08);
+}
+
+.dropzone-content {
+    flex: 1;
+    min-width: 0;
+}
+
+.dropzone-title {
+    font-size: 0.78rem;
+    font-weight: 700;
+    color: #f5f5f7;
+    margin-bottom: 2px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.dropzone-desc {
+    font-size: 0.68rem;
+    color: var(--text-muted);
+    line-height: 1.3;
+    white-space: normal;
+}
+
+/* 패널 전체 드래그 오버 시 피드백 */
+#panel-media.panel-dragover {
+    box-shadow: inset 0 0 0 2px #00e5ff, 0 0 25px rgba(0, 229, 255, 0.2);
+}
+
+/* ========================================================================
+   릴스 언로드 및 폴더 선택 안내 UI
+   ======================================================================== */
+.reels-grid .empty-list-msg,
+.reels-grid .reels-unloaded-box,
+.reels-grid .reels-select-prompt {
+    grid-column: 1 / -1;
+}
+
+.reels-unloaded-box,
+.reels-select-prompt {
+    background: rgba(255, 255, 255, 0.02);
+    border: 1px dashed rgba(255, 255, 255, 0.12);
+    border-radius: 8px;
+    padding: 22px 14px;
+    text-align: center;
+    color: var(--text-muted);
+}
+
+.reels-unloaded-box i {
+    font-size: 1.6rem;
+    color: var(--text-dim);
+    margin-bottom: 8px;
+    display: block;
+}
+
+.reels-unloaded-box p {
+    font-size: 0.76rem;
+    margin-bottom: 10px;
+    line-height: 1.4;
+}
+
+.reels-unloaded-box .btn {
+    font-size: 0.72rem;
+    padding: 4px 10px;
+}
+
+.reels-select-prompt i {
+    font-size: 1.8rem;
+    color: #ff416c;
+    opacity: 0.85;
+    margin-bottom: 8px;
+    display: block;
+}
+
+.reels-select-prompt .prompt-title {
+    font-size: 0.82rem;
+    font-weight: 600;
+    color: var(--text-main);
+    margin-bottom: 4px;
+}
+
+.reels-select-prompt .prompt-desc {
+    font-size: 0.72rem;
+    color: var(--text-dim);
+    line-height: 1.4;
+}
+
+/* ========================================================================
+   에셋 목록 아이템 및 삭제/언로드 버튼
+   ======================================================================== */
+.asset-item {
+    position: relative;
+    padding-right: 32px;
+}
+
+.btn-asset-remove {
+    position: absolute;
+    right: 8px;
+    top: 50%;
+    transform: translateY(-50%);
+    width: 20px;
+    height: 20px;
+    border-radius: 50%;
+    border: none;
+    background: rgba(255, 255, 255, 0.08);
+    color: var(--text-muted);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 10px;
+    cursor: pointer;
+    transition: all 0.15s ease;
+    opacity: 0.6;
+}
+
+.asset-item:hover .btn-asset-remove {
+    opacity: 1;
+}
+
+.btn-asset-remove:hover {
+    background: var(--danger);
+    color: #fff;
+    transform: translateY(-50%) scale(1.15);
+}
+
+/* ========================================================================
+   크로마키 (Chroma Key) 설정 스타일링
+   ======================================================================== */
+.chromakey-section {
+    background: rgba(0, 229, 255, 0.05) !important;
+    border: 1px solid rgba(0, 229, 255, 0.25) !important;
+    border-radius: 8px !important;
+    padding: 10px 12px !important;
+    margin-top: 12px;
+    transition: all 0.2s ease;
+}
+
+.chromakey-header-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.chromakey-title {
+    margin: 0 !important;
+    color: #00e5ff !important;
+    font-size: 0.8rem !important;
+    font-weight: 700 !important;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.chromakey-toggle-label {
+    margin: 0 !important;
+    font-size: 0.75rem;
+    cursor: pointer;
+}
+
+.chromakey-controls-body {
+    margin-top: 10px;
+    border-top: 1px solid rgba(0, 229, 255, 0.15);
+    padding-top: 10px;
+}
+
+.chroma-label-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-size: 0.74rem;
+    color: var(--text-muted);
+    margin-bottom: 6px;
+}
+
+.chromakey-color-picker-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.chroma-color-input {
+    width: 36px;
+    height: 30px;
+    padding: 0;
+    border: 1px solid rgba(255, 255, 255, 0.2);
+    border-radius: 4px;
+    cursor: pointer;
+    background: transparent;
+}
+
+.chroma-color-text {
+    width: 80px;
+    font-family: monospace;
+    font-size: 11px;
+    text-transform: uppercase;
+    font-weight: 600;
+    padding: 5px 6px;
+    text-align: center;
+}
+
+.chromakey-presets {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    margin-left: auto;
+}
+
+.btn-chroma-preset {
+    width: 22px;
+    height: 22px;
+    border-radius: 4px;
+    border: 1px solid rgba(255, 255, 255, 0.2);
+    cursor: pointer;
+    transition: transform 0.15s ease, box-shadow 0.15s ease;
+    padding: 0;
+}
+
+.btn-chroma-preset:hover {
+    transform: scale(1.2);
+    box-shadow: 0 0 8px rgba(255, 255, 255, 0.5);
+    z-index: 2;
+}
+
+.btn-chroma-preset.active {
+    box-shadow: 0 0 0 2px #fff, 0 0 8px rgba(0, 229, 255, 0.8);
+    transform: scale(1.15);
+}
+
+/* 스포이드 활성화 상태의 프리뷰 캔버스 */
+.preview-canvas-wrapper.eyedropper-mode #preview-canvas {
+    cursor: crosshair !important;
+    outline: 2px dashed #00e5ff;
+}
+
+.eyedropper-banner {
+    position: absolute;
+    top: 12px;
+    left: 50%;
+    transform: translateX(-50%);
+    background: rgba(0, 229, 255, 0.9);
+    color: #0c0c0e;
+    font-size: 0.75rem;
+    font-weight: 700;
+    padding: 4px 12px;
+    border-radius: 12px;
+    box-shadow: 0 4px 14px rgba(0, 0, 0, 0.4);
+    z-index: 50;
+    pointer-events: none;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    animation: pulse 1.5s infinite;
+}
+

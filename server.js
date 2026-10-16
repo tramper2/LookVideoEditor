@@ -582,15 +582,107 @@ const server = http.createServer(async (req, res) => {
         req.pipe(fileStream);
 
         fileStream.on('finish', () => {
-            console.log(`[LookVideoEditor] 소스 파일 업로드 완료: ${targetPath}`);
+            let size = 0;
+            try {
+                size = fs.statSync(targetPath).size;
+            } catch (e) {}
+
+            const ext = path.extname(filename).toLowerCase();
+            let mediaType = 'unknown';
+            if (VIDEO_EXTS.has(ext)) mediaType = 'video';
+            else if (['.jpg', '.jpeg', '.png', '.webp', '.gif', '.bmp', '.svg'].includes(ext)) mediaType = 'image';
+            else if (['.mp3', '.wav', '.m4a', '.aac', '.flac', '.ogg'].includes(ext)) mediaType = 'audio';
+
+            console.log(`[LookVideoEditor] 소스 파일 업로드 완료: ${targetPath} (${(size / 1024).toFixed(1)} KB, type: ${mediaType})`);
             res.writeHead(200, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify({ success: true, localPath: targetPath, filename: filename }));
+            res.end(JSON.stringify({
+                success: true,
+                localPath: targetPath,
+                filename: filename,
+                url: `/source/${encodeURIComponent(filename)}`,
+                size: size,
+                type: mediaType
+            }));
         });
 
         fileStream.on('error', (err) => {
             console.error(`[LookVideoEditor] 소스 파일 업로드 실패:`, err);
             res.writeHead(500, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify({ error: err.message }));
+            res.end(JSON.stringify({ success: false, error: err.message }));
+        });
+        return;
+    }
+
+    // 3-0. 소스 폴더(source/) 파일 목록 조회
+    if (pathname === '/api/source/list' && req.method === 'GET') {
+        const sourceDir = path.join(ROOT_DIR, 'source');
+        if (!fs.existsSync(sourceDir)) {
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ success: true, files: [] }));
+            return;
+        }
+
+        try {
+            const files = fs.readdirSync(sourceDir)
+                .map(f => {
+                    const fp = path.join(sourceDir, f);
+                    try {
+                        const stat = fs.statSync(fp);
+                        if (!stat.isFile()) return null;
+                        const ext = path.extname(f).toLowerCase();
+                        let type = 'unknown';
+                        if (VIDEO_EXTS.has(ext)) type = 'video';
+                        else if (['.jpg', '.jpeg', '.png', '.webp', '.gif', '.bmp'].includes(ext)) type = 'image';
+                        else if (['.mp3', '.wav', '.m4a', '.aac', '.flac'].includes(ext)) type = 'audio';
+
+                        return {
+                            name: f,
+                            localPath: fp,
+                            url: `/source/${encodeURIComponent(f)}`,
+                            size: stat.size,
+                            type: type,
+                            mtime: stat.mtimeMs
+                        };
+                    } catch (e) {
+                        return null;
+                    }
+                })
+                .filter(Boolean)
+                .sort((a, b) => b.mtime - a.mtime);
+
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ success: true, files }));
+        } catch (e) {
+            res.writeHead(500, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ success: false, error: e.message }));
+        }
+        return;
+    }
+
+    // 3-0-1. 소스 폴더(source/) 파일 삭제/언로드
+    if (pathname === '/api/source/delete' && req.method === 'POST') {
+        let body = '';
+        req.on('data', chunk => { body += chunk; });
+        req.on('end', () => {
+            try {
+                const data = JSON.parse(body || '{}');
+                const filename = data.filename ? path.basename(data.filename) : null;
+                if (!filename) {
+                    res.writeHead(400, { 'Content-Type': 'application/json' });
+                    res.end(JSON.stringify({ success: false, error: '파일명이 제공되지 않았습니다.' }));
+                    return;
+                }
+                const targetPath = path.join(ROOT_DIR, 'source', filename);
+                if (fs.existsSync(targetPath)) {
+                    fs.unlinkSync(targetPath);
+                    console.log(`[LookVideoEditor] 소스 파일 삭제 완료: ${targetPath}`);
+                }
+                res.writeHead(200, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ success: true, deleted: filename }));
+            } catch (e) {
+                res.writeHead(500, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ success: false, error: e.message }));
+            }
         });
         return;
     }

@@ -62,6 +62,10 @@ const GIF_DURATION_CHOICES = [3, 2, 1.5, 1];
 const filterBufferCanvas = document.createElement('canvas');
 const filterBufferCtx = filterBufferCanvas.getContext('2d');
 
+// 크로마키(단색 배경 투명화) 연산용 임시 오프스크린 캔버스
+const chromaOffscreenCanvas = document.createElement('canvas');
+const chromaOffscreenCtx = chromaOffscreenCanvas.getContext('2d', { willReadFrequently: true });
+
 // --- DOM 요소 캐싱 ---
 const DOM = {
     btnNewProject: document.getElementById('btn-new-project'),
@@ -71,6 +75,9 @@ const DOM = {
     btnRenderVideo: document.getElementById('btn-render-video'),
     
     inputMedia: document.getElementById('input-media'),
+    mediaDropzone: document.getElementById('media-dropzone'),
+    btnUnloadReels: document.getElementById('btn-unload-reels'),
+    btnClearAssets: document.getElementById('btn-clear-assets'),
     btnAddBgmSticker: document.getElementById('btn-add-bgm-sticker'),
     assetList: document.getElementById('asset-list'),
     
@@ -171,6 +178,19 @@ const DOM = {
     fadeOutPresets: document.querySelectorAll('.btn-fade-preset'),
     btnDuplicateClip: document.getElementById('btn-duplicate-clip'),
     btnDeleteClip: document.getElementById('btn-delete-clip'),
+    
+    // 크로마키 속성 제어 요소
+    chromakeyPropertiesSection: document.getElementById('chromakey-properties-section'),
+    chromakeyControlsBody: document.getElementById('chromakey-controls-body'),
+    propChromakeyEnable: document.getElementById('prop-chromakey-enable'),
+    propChromakeyColor: document.getElementById('prop-chromakey-color'),
+    propChromakeyColorText: document.getElementById('prop-chromakey-color-text'),
+    btnChromakeyEyedropper: document.getElementById('btn-chromakey-eyedropper'),
+    propChromakeySim: document.getElementById('prop-chromakey-sim'),
+    propChromakeySimVal: document.getElementById('prop-chromakey-sim-label'),
+    propChromakeyBlend: document.getElementById('prop-chromakey-blend'),
+    propChromakeyBlendVal: document.getElementById('prop-chromakey-blend-label'),
+    chromaPresets: document.querySelectorAll('.btn-chroma-preset'),
     
     hiddenPlayersContainer: document.getElementById('hidden-players-container'),
     
@@ -358,19 +378,115 @@ function updatePreviewResolution() {
     renderPreview();
 }
 
+/**
+ * 드래그앤드롭 이벤트의 DataTransfer 객체로부터 폴더 내부까지 재귀적으로 모든 미디어 파일을 추출
+ */
+async function extractFilesFromDataTransfer(dataTransfer) {
+    if (!dataTransfer) return [];
+    const files = [];
+
+    // DataTransferItemList 와 webkitGetAsEntry 가 지원되는 모던 브라우저 (Chrome, Edge 등)
+    if (dataTransfer.items && dataTransfer.items.length > 0 && dataTransfer.items[0].webkitGetAsEntry) {
+        const queue = [];
+        for (let i = 0; i < dataTransfer.items.length; i++) {
+            const item = dataTransfer.items[i];
+            if (item.kind === 'file') {
+                const entry = item.webkitGetAsEntry();
+                if (entry) queue.push(entry);
+            }
+        }
+
+        while (queue.length > 0) {
+            const entry = queue.shift();
+            if (entry.isFile) {
+                const file = await new Promise((resolve) => {
+                    entry.file(
+                        (f) => resolve(f),
+                        () => resolve(null)
+                    );
+                });
+                if (file) files.push(file);
+            } else if (entry.isDirectory) {
+                const reader = entry.createReader();
+                const readAllEntries = async () => {
+                    return new Promise((resolve) => {
+                        const batch = [];
+                        function readBatch() {
+                            reader.readEntries((results) => {
+                                if (!results || results.length === 0) {
+                                    resolve(batch);
+                                } else {
+                                    batch.push(...results);
+                                    readBatch();
+                                }
+                            }, () => resolve(batch));
+                        }
+                        readBatch();
+                    });
+                };
+                const subEntries = await readAllEntries();
+                queue.push(...subEntries);
+            }
+        }
+    } else if (dataTransfer.files && dataTransfer.files.length > 0) {
+        // 폴백: 기본 files 리스트 사용
+        for (let i = 0; i < dataTransfer.files.length; i++) {
+            files.push(dataTransfer.files[i]);
+        }
+    }
+
+    // 미디어 파일 확장자 및 MIME 필터링
+    const mediaExts = ['.mp4', '.mov', '.avi', '.mkv', '.webm', '.flv', '.wmv', '.m4v', '.ts',
+                       '.png', '.jpg', '.jpeg', '.webp', '.gif', '.bmp', '.svg',
+                       '.mp3', '.wav', '.m4a', '.aac', '.flac', '.ogg', '.wma'];
+    
+    return files.filter(f => {
+        if (!f || !f.name) return false;
+        const lower = f.name.toLowerCase();
+        return f.type.startsWith('video/') ||
+               f.type.startsWith('image/') ||
+               f.type.startsWith('audio/') ||
+               mediaExts.some(ext => lower.endsWith(ext));
+    });
+}
+
 function setupEventListeners() {
-    // 미디어 가져오기 이벤트 (영상은 릴스 폴더 선택으로 로드, 이미지/음악만 파일 선택)
+    // 미디어 가져오기 이벤트 (영상/이미지/음악 선택)
     if (DOM.btnAddBgmSticker) {
         DOM.btnAddBgmSticker.addEventListener('click', () => DOM.inputMedia.click());
     }
-    DOM.inputMedia.addEventListener('change', (e) => {
-        if (e.target.files.length > 0) {
-            handleMediaImport(e.target.files);
-            e.target.value = '';
-        }
-    });
+    if (DOM.inputMedia) {
+        DOM.inputMedia.addEventListener('change', (e) => {
+            if (e.target.files.length > 0) {
+                handleMediaImport(e.target.files);
+                e.target.value = '';
+            }
+        });
+    }
 
-    // 탐색기에서 파일을 왼쪽 미디어 목록에 바로 떨어뜨려도 가져온다 (배치는 하지 않고 목록에만 추가)
+    // 미디어 드롭존 (폴더 및 파일 드래그앤드롭 가져오기)
+    if (DOM.mediaDropzone) {
+        DOM.mediaDropzone.addEventListener('click', () => DOM.inputMedia.click());
+        DOM.mediaDropzone.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            e.dataTransfer.dropEffect = 'copy';
+            DOM.mediaDropzone.classList.add('dragover');
+        });
+        DOM.mediaDropzone.addEventListener('dragleave', () => {
+            DOM.mediaDropzone.classList.remove('dragover');
+        });
+        DOM.mediaDropzone.addEventListener('drop', async (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            DOM.mediaDropzone.classList.remove('dragover');
+            const files = await extractFilesFromDataTransfer(e.dataTransfer);
+            if (files && files.length > 0) {
+                handleMediaImport(files);
+            }
+        });
+    }
+
+    // 탐색기에서 파일을 왼쪽 미디어 목록에 바로 떨어뜨려도 가져온다 (폴더 내부 파일 재귀 추출)
     if (DOM.assetList) {
         DOM.assetList.addEventListener('dragover', (e) => {
             e.preventDefault();
@@ -380,14 +496,25 @@ function setupEventListeners() {
         DOM.assetList.addEventListener('dragleave', () => {
             DOM.assetList.classList.remove('dragover-lane');
         });
-        DOM.assetList.addEventListener('drop', (e) => {
+        DOM.assetList.addEventListener('drop', async (e) => {
             DOM.assetList.classList.remove('dragover-lane');
             e.preventDefault();
-            const files = e.dataTransfer.files;
+            e.stopPropagation();
+            const files = await extractFilesFromDataTransfer(e.dataTransfer);
             if (files && files.length > 0) {
                 handleMediaImport(files);
             }
         });
+    }
+
+    // 미디어 라이브러리 전체 비우기 버튼
+    if (DOM.btnClearAssets) {
+        DOM.btnClearAssets.addEventListener('click', clearAllAssets);
+    }
+
+    // 기본 릴스 언로드/숨기기 토글 버튼
+    if (DOM.btnUnloadReels) {
+        DOM.btnUnloadReels.addEventListener('click', toggleUnloadReels);
     }
 
     // 목표 지점 밖에 파일을 떨어뜨리면 브라우저가 그 파일을 열어버려 편집 내용이 날아간다. 기본 동작을 막는다.
@@ -755,12 +882,81 @@ function setupEventListeners() {
         DOM.propTextOpacity, DOM.propTextEffect, DOM.propTextBgbox, DOM.propTextWeight,
         DOM.propTextFont, DOM.propTextFontCustom,
         DOM.propImgWidth, DOM.propImgHeight, DOM.propTextX, DOM.propTextY,
-        DOM.propFadeOutDuration
+        DOM.propFadeOutDuration,
+        DOM.propChromakeyEnable, DOM.propChromakeyColor, DOM.propChromakeyColorText,
+        DOM.propChromakeySim, DOM.propChromakeyBlend
     ];
     propInputs.forEach(input => {
         if (input) {
             input.addEventListener('input', updateSelectedClipFromInputs);
             input.addEventListener('change', updateSelectedClipFromInputs);
+        }
+    });
+
+    // 크로마키 프리셋 버튼 이벤트 바인딩
+    if (DOM.chromaPresets) {
+        DOM.chromaPresets.forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                e.preventDefault();
+                const color = btn.dataset.color;
+                if (!color) return;
+                if (DOM.propChromakeyColor) DOM.propChromakeyColor.value = color;
+                if (DOM.propChromakeyColorText) DOM.propChromakeyColorText.value = color;
+                updateSelectedClipFromInputs();
+            });
+        });
+    }
+
+    // 크로마키 색상 텍스트 입력과 컬러 피커 양방향 연동
+    if (DOM.propChromakeyColor) {
+        DOM.propChromakeyColor.addEventListener('input', () => {
+            if (DOM.propChromakeyColorText) DOM.propChromakeyColorText.value = DOM.propChromakeyColor.value;
+        });
+    }
+    if (DOM.propChromakeyColorText) {
+        DOM.propChromakeyColorText.addEventListener('input', () => {
+            let val = DOM.propChromakeyColorText.value.trim();
+            if (!val.startsWith('#')) val = '#' + val;
+            if (/^#[0-9a-f]{6}$/i.test(val)) {
+                if (DOM.propChromakeyColor) DOM.propChromakeyColor.value = val;
+            }
+        });
+    }
+
+    // 크로마키 스포이드(Eyedropper) 버튼
+    if (DOM.btnChromakeyEyedropper) {
+        DOM.btnChromakeyEyedropper.addEventListener('click', activateEyedropper);
+    }
+
+    // 프리뷰 캔버스 클릭 시 스포이드 색상 추출
+    if (DOM.previewCanvas) {
+        DOM.previewCanvas.addEventListener('click', (e) => {
+            if (!isEyedropperActive) return;
+            e.stopPropagation();
+            e.preventDefault();
+
+            const rect = DOM.previewCanvas.getBoundingClientRect();
+            const x = Math.floor((e.clientX - rect.left) * (DOM.previewCanvas.width / rect.width));
+            const y = Math.floor((e.clientY - rect.top) * (DOM.previewCanvas.height / rect.height));
+
+            try {
+                const pixel = ctx.getImageData(x, y, 1, 1).data;
+                const r = pixel[0].toString(16).padStart(2, '0');
+                const g = pixel[1].toString(16).padStart(2, '0');
+                const b = pixel[2].toString(16).padStart(2, '0');
+                const hex = `#${r}${g}${b}`;
+                applyEyedropperColor(hex);
+            } catch (err) {
+                console.warn('[LookVideoEditor] 스포이드 샘플링 오류:', err);
+                deactivateEyedropper();
+            }
+        });
+    }
+
+    // ESC 키로 스포이드 모드 해제
+    document.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape' && isEyedropperActive) {
+            deactivateEyedropper();
         }
     });
 
@@ -834,7 +1030,7 @@ function setupEventListeners() {
         lane.addEventListener('dragleave', () => {
             lane.classList.remove('dragover-lane');
         });
-        lane.addEventListener('drop', (e) => {
+        lane.addEventListener('drop', async (e) => {
             lane.classList.remove('dragover-lane');
             e.preventDefault();
 
@@ -843,21 +1039,21 @@ function setupEventListeners() {
             const dropX = e.clientX - rect.left + lane.scrollLeft;
             const dropTime = Math.max(0, dropX / STATE.timelineZoom);
 
-            // 1) 탐색기(OS)에서 파일을 직접 떨어뜨린 경우 → 가져오기 + 그 자리에 배치
-            const files = e.dataTransfer.files;
-            if (files && files.length > 0) {
-                // 여러 개를 한꺼번에 떨어뜨리면 앞 클립 끝에 차례로 이어 붙인다
-                let cursor = dropTime;
-                handleMediaImport(files, (asset) => {
-                    const before = STATE.clips.length;
-                    addAssetToTimeline(asset.id, targetTrack, cursor);
-                    if (STATE.clips.length > before) {
-                        // addAssetToTimeline 은 동기이므로 방금 놓인 클립이 마지막 항목이다
-                        const placed = STATE.clips[STATE.clips.length - 1];
-                        cursor = placed.timelineStart + placed.duration;
-                    }
-                });
-                return;
+            // 1) 탐색기(OS)에서 파일/폴더를 직접 떨어뜨린 경우 → 가져오기 + 그 자리에 배치
+            if (e.dataTransfer.items || (e.dataTransfer.files && e.dataTransfer.files.length > 0)) {
+                const files = await extractFilesFromDataTransfer(e.dataTransfer);
+                if (files && files.length > 0) {
+                    let cursor = dropTime;
+                    handleMediaImport(files, (asset) => {
+                        const before = STATE.clips.length;
+                        addAssetToTimeline(asset.id, targetTrack, cursor);
+                        if (STATE.clips.length > before) {
+                            const placed = STATE.clips[STATE.clips.length - 1];
+                            cursor = placed.timelineStart + placed.duration;
+                        }
+                    });
+                    return;
+                }
             }
 
             // 2) 앱 안 미디어 목록에서 끌어온 경우 → 그 자리에 배치
@@ -963,7 +1159,7 @@ function handleMediaImport(files, onAssetReady) {
         let asset = existingAsset;
         if (!existingAsset) {
             const id = 'asset_' + Date.now() + '_' + Math.random().toString(36).substr(2, 5);
-            const localPath = `D:\\Study\\WebPage\\LookVideoEditor\\source\\${file.name}`;
+            const localPath = file.path || `source\\${file.name}`;
             asset = {
                 id,
                 name: file.name,
@@ -1060,7 +1256,7 @@ function updateAssetListUI() {
     DOM.assetList.innerHTML = '';
     
     if (STATE.assets.length === 0) {
-        DOM.assetList.innerHTML = '<li class="empty-list-msg">미디어 파일이 없습니다.</li>';
+        DOM.assetList.innerHTML = '<li class="empty-list-msg">미디어 파일이 없습니다.<br>상단 드롭존에 파일을 끌어다 놓으세요.</li>';
         return;
     }
 
@@ -1077,23 +1273,96 @@ function updateAssetListUI() {
         li.innerHTML = `
             <i class="fa-solid ${iconClass} asset-icon"></i>
             <div class="asset-info">
-                <div class="asset-name" title="${asset.name}">${asset.name}</div>
+                <div class="asset-name" title="${escapeHtml(asset.name)}">${escapeHtml(asset.name)}</div>
                 <div class="asset-duration">${asset.type === 'image' ? '이미지' : formatTimeShort(asset.duration)}</div>
             </div>
+            <button class="btn-asset-remove" title="라이브러리에서 제거" data-asset-id="${asset.id}">
+                <i class="fa-solid fa-xmark"></i>
+            </button>
         `;
 
         li.addEventListener('dragstart', (e) => {
             e.dataTransfer.setData('text/plain', asset.id);
         });
 
+        const removeBtn = li.querySelector('.btn-asset-remove');
+        if (removeBtn) {
+            removeBtn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                removeAsset(asset.id);
+            });
+        }
+
         DOM.assetList.appendChild(li);
     });
+}
+
+// 개별 에셋 삭제
+function removeAsset(assetId) {
+    const asset = STATE.assets.find(a => a.id === assetId);
+    if (!asset) return;
+
+    const usedCount = STATE.clips.filter(c => c.assetId === assetId).length;
+    if (usedCount > 0) {
+        if (!confirm(`이 미디어는 타임라인의 ${usedCount}개 클립에서 사용 중입니다. 정말 라이브러리에서 제거하시겠습니까?`)) {
+            return;
+        }
+    }
+
+    if (activePlayers[assetId]) {
+        try {
+            activePlayers[assetId].pause();
+            activePlayers[assetId].remove();
+        } catch (e) {}
+        delete activePlayers[assetId];
+    }
+
+    // 서버 소스 파일 삭제 요청
+    if (asset.name) {
+        fetch(`/api/source/delete?filename=${encodeURIComponent(asset.name)}`, { method: 'DELETE' }).catch(() => {});
+    }
+
+    STATE.assets = STATE.assets.filter(a => a.id !== assetId);
+    updateAssetListUI();
+}
+
+// 라이브러리 전체 에셋 비우기
+function clearAllAssets() {
+    if (STATE.assets.length === 0) return;
+    if (!confirm(`라이브러리의 모든 미디어 파일(${STATE.assets.length}개)을 목록에서 비우시겠습니까?`)) return;
+
+    STATE.assets.forEach(asset => {
+        if (activePlayers[asset.id]) {
+            try {
+                activePlayers[asset.id].pause();
+                activePlayers[asset.id].remove();
+            } catch (e) {}
+            delete activePlayers[asset.id];
+        }
+        if (asset.name) {
+            fetch(`/api/source/delete?filename=${encodeURIComponent(asset.name)}`, { method: 'DELETE' }).catch(() => {});
+        }
+    });
+
+    STATE.assets = [];
+    updateAssetListUI();
+}
+
+// 기본 릴스 언로드/숨기기 토글
+function toggleUnloadReels() {
+    const isUnloaded = localStorage.getItem('look_reels_unloaded') === 'true';
+    if (isUnloaded) {
+        localStorage.removeItem('look_reels_unloaded');
+    } else {
+        localStorage.setItem('look_reels_unloaded', 'true');
+    }
+    loadReels();
 }
 
 // ── 릴스 불러오기 (vTonSales 릴스 저장 폴더 연동) ─────────────────────────
 let reelsList = [];
 let reelsFolders = [];
-let currentReelsFolder = '';   // '' = 전체 릴스, 그 외 = 의류 폴더명
+let currentReelsFolder = '';   // '' = 미선택(안내 화면), '__ALL__' = 전체 릴스 일괄 보기, 그 외 = 의류 폴더명
 
 function escapeHtml(str) {
     return String(str).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -1135,11 +1404,13 @@ function renderReelsFolderSelect() {
     const prevValue = currentReelsFolder;
     sel.innerHTML = '';
 
-    const allOpt = document.createElement('option');
-    allOpt.value = '';
-    allOpt.textContent = `전체 릴스 (${reelsList.length})`;
-    sel.appendChild(allOpt);
+    // 1. 기본 미선택 안내 옵션 (초기 로드 시 80여 개 영상 자동 렌더 방지)
+    const defaultOpt = document.createElement('option');
+    defaultOpt.value = '';
+    defaultOpt.textContent = `-- 의류 폴더를 선택하세요 --`;
+    sel.appendChild(defaultOpt);
 
+    // 2. 의류/제품별 폴더 목록
     reelsFolders.forEach(f => {
         const opt = document.createElement('option');
         opt.value = f.name;
@@ -1150,10 +1421,20 @@ function renderReelsFolderSelect() {
         sel.appendChild(opt);
     });
 
-    // 새로고침 후에도 기존 선택 유지 (삭제된 폴더면 전체로 복귀)
-    if (prevValue && reelsFolders.some(f => f.name === prevValue)) {
+    // 3. 전체 릴스 일괄 보기 (사용자가 원할 때 명시적으로 선택)
+    if (reelsList.length > 0) {
+        const allOpt = document.createElement('option');
+        allOpt.value = '__ALL__';
+        allOpt.textContent = `[전체 릴스 일괄 보기] (${reelsList.length}개)`;
+        sel.appendChild(allOpt);
+    }
+
+    // 새로고침 후에도 사용자가 이미 선택한 폴더가 유효하면 유지, 없으면 기본 미선택('') 유지
+    if (prevValue === '__ALL__' || (prevValue && reelsFolders.some(f => f.name === prevValue))) {
         sel.value = prevValue;
+        currentReelsFolder = prevValue;
     } else {
+        sel.value = '';
         currentReelsFolder = '';
     }
 }
@@ -1162,14 +1443,51 @@ function renderReelsGrid() {
     const grid = document.getElementById('reels-grid');
     if (!grid) return;
 
-    const list = currentReelsFolder
-        ? reelsList.filter(r => r.product === currentReelsFolder)
-        : reelsList;
+    const isUnloaded = localStorage.getItem('look_reels_unloaded') === 'true';
+    if (DOM.btnUnloadReels) {
+        DOM.btnUnloadReels.title = isUnloaded ? "기본 릴스 다시 불러오기" : "기본 릴스 언로드 (숨기기)";
+        DOM.btnUnloadReels.style.opacity = isUnloaded ? '0.5' : '1.0';
+    }
+
+    if (isUnloaded) {
+        grid.innerHTML = `
+            <div class="reels-unloaded-box">
+                <i class="fa-solid fa-boxes-packing" style="font-size: 26px; color: var(--text-muted); margin-bottom: 8px;"></i>
+                <div style="font-weight: 600; font-size: 13px; margin-bottom: 4px;">기본 릴스 샘플 언로드됨</div>
+                <div style="font-size: 11px; color: var(--text-muted); margin-bottom: 12px; line-height: 1.4;">작업 공간을 깔끔하게 유지하기 위해 기본 릴스가 숨겨졌습니다.</div>
+                <button id="btn-reload-reels" class="btn btn-sm btn-secondary"><i class="fa-solid fa-rotate"></i> 릴스 다시 불러오기</button>
+            </div>
+        `;
+        const reloadBtn = document.getElementById('btn-reload-reels');
+        if (reloadBtn) {
+            reloadBtn.addEventListener('click', () => {
+                localStorage.removeItem('look_reels_unloaded');
+                loadReels();
+            });
+        }
+        return;
+    }
+
+    // 폴더를 선택하지 않은 초기 상태: 80개 영상을 미리 렌더하지 않고 친절한 안내 문구 표시
+    if (!currentReelsFolder) {
+        grid.innerHTML = `
+            <div class="reels-select-prompt">
+                <i class="fa-solid fa-folder-open"></i>
+                <div class="prompt-title">의류 폴더를 선택해 주세요</div>
+                <div class="prompt-desc">상단 드롭다운에서 원하는 폴더를 선택하시면<br>해당 의류의 릴스 영상만 불러옵니다.</div>
+            </div>
+        `;
+        return;
+    }
+
+    const list = currentReelsFolder === '__ALL__'
+        ? reelsList
+        : reelsList.filter(r => r.product === currentReelsFolder);
 
     if (list.length === 0) {
-        grid.innerHTML = currentReelsFolder
-            ? '<div class="empty-list-msg">이 폴더에는 릴스가 없습니다.</div>'
-            : '<div class="empty-list-msg">릴스가 없습니다.<br>(룩북 스튜디오에서 릴스 생성 후 새로고침)</div>';
+        grid.innerHTML = currentReelsFolder === '__ALL__'
+            ? '<div class="empty-list-msg">릴스가 없습니다.<br>(룩북 스튜디오에서 릴스 생성 후 새로고침)</div>'
+            : '<div class="empty-list-msg">이 폴더에는 릴스가 없습니다.</div>';
         return;
     }
 
@@ -1713,8 +2031,8 @@ function addAssetToTimeline(assetId, trackType, timelineStart) {
     if (!asset) return;
 
     // 트랙 타입 유효성 검사
-    if (asset.type === 'video' && (trackType !== 'video1' && trackType !== 'video2')) {
-        alert("비디오 파일은 Video Track 1 또는 Video Track 2(PIP)에만 배치할 수 있습니다.");
+    if (asset.type === 'video' && (trackType !== 'video1' && trackType !== 'video2' && trackType !== 'overlay')) {
+        alert("비디오 파일은 Video Track 1, Video Track 2(PIP), 또는 Overlay Track에 배치할 수 있습니다.");
         return;
     }
     if (asset.type === 'audio' && trackType !== 'audio') {
@@ -1764,16 +2082,34 @@ function addAssetToTimeline(assetId, trackType, timelineStart) {
     if (trackType === 'video2') {
         // PIP 기본 크기 및 좌표 (1280x720 기준)
         newClip.pip = { width: 320, height: 180, x: 20, y: 20 };
+        newClip.chromakey = false;
+        newClip.chromakeyColor = '#00ff00';
+        newClip.chromakeySimilarity = 0.25;
+        newClip.chromakeyBlend = 0.1;
     } else if (trackType === 'video1' && asset.type === 'image') {
         // Video Track 1 위의 정지 이미지 = 정지 구간.
         // 생성기가 입력 스펙(-ss/-t 없이 -i, 오디오 분기 생략)을 다르게 만들어야 하므로 표시해 둔다.
         newClip.mediaType = 'image';
+    } else if (trackType === 'overlay' && asset.type === 'video') {
+        newClip.overlayType = 'video';
+        newClip.width = 480;
+        newClip.height = 270;
+        newClip.x = 400;
+        newClip.y = 225;
+        newClip.chromakey = false;
+        newClip.chromakeyColor = '#00ff00';
+        newClip.chromakeySimilarity = 0.25;
+        newClip.chromakeyBlend = 0.1;
     } else if (trackType === 'overlay' && asset.type === 'image') {
         newClip.overlayType = 'image';
         newClip.width = 150;
         newClip.height = 150;
         newClip.x = 640;
         newClip.y = 360;
+        newClip.chromakey = false;
+        newClip.chromakeyColor = '#00ff00';
+        newClip.chromakeySimilarity = 0.25;
+        newClip.chromakeyBlend = 0.1;
     }
 
     STATE.clips.push(newClip);
@@ -1888,6 +2224,11 @@ function updateTimelineClipsUI() {
             }
         }
 
+        let chromakeyBadgeHtml = '';
+        if (clip.chromakey === true) {
+            chromakeyBadgeHtml = `<span class="clip-loop-badge" style="background: rgba(0, 230, 118, 0.25); color: #00e676; border-color: rgba(0, 230, 118, 0.4);" title="크로마키 활성화 (${clip.chromakeyColor || '#00ff00'})"><i class="fa-solid fa-wand-magic-sparkles"></i> 키</span>`;
+        }
+
         let displayName = clip.name;
         if (clip.overlayType === 'text') displayName = clip.text || '자막 텍스트';
 
@@ -1899,7 +2240,7 @@ function updateTimelineClipsUI() {
         clipEl.innerHTML = `
             <div class="trim-handle trim-handle-left" data-handle="left"></div>
             <span class="clip-name">${displayName}</span>
-            ${speedBadgeHtml}${loopBadgeHtml}${stillBadgeHtml}${muteBadgeHtml}${transitionBadgeHtml}
+            ${speedBadgeHtml}${loopBadgeHtml}${stillBadgeHtml}${muteBadgeHtml}${transitionBadgeHtml}${chromakeyBadgeHtml}
             <span class="clip-duration-info">${durationInfoHtml}</span>
             <div class="trim-handle trim-handle-right" data-handle="right"></div>
         `;
@@ -1996,6 +2337,7 @@ function selectClip(clipId) {
     DOM.pipPropertiesSection.classList.add('hide');
     DOM.textOverlaySection.classList.add('hide');
     DOM.imageOverlaySection.classList.add('hide');
+    if (DOM.chromakeyPropertiesSection) DOM.chromakeyPropertiesSection.classList.add('hide');
 
     if (clip.track === 'video1' || clip.track === 'video2') {
         DOM.propClipTitle.textContent = clip.track === 'video1' ? "메인 비디오 클립" : "PIP 비디오 클립";
@@ -2093,7 +2435,87 @@ function selectClip(clipId) {
             DOM.imageOverlaySection.classList.remove('hide');
             DOM.propImgWidth.value = clip.width || 150;
             DOM.propImgHeight.value = clip.height || 150;
+        } else if (clip.overlayType === 'video') {
+            DOM.propClipTitle.textContent = "동영상 오버레이";
+            DOM.imageOverlaySection.classList.remove('hide');
+            DOM.propImgWidth.value = clip.width || 480;
+            DOM.propImgHeight.value = clip.height || 270;
         }
+    }
+
+    // 크로마키 제어 섹션 표시 및 초기값 채우기 (Video Track 2 또는 Overlay Track)
+    if (DOM.chromakeyPropertiesSection) {
+        const canChromakey = clip.track === 'video2' || (clip.track === 'overlay' && (clip.overlayType === 'image' || clip.overlayType === 'video'));
+        if (canChromakey) {
+            DOM.chromakeyPropertiesSection.classList.remove('hide');
+            const isEnabled = clip.chromakey === true;
+            if (DOM.propChromakeyEnable) DOM.propChromakeyEnable.checked = isEnabled;
+            if (DOM.chromakeyControlsBody) {
+                if (isEnabled) DOM.chromakeyControlsBody.classList.remove('hide');
+                else DOM.chromakeyControlsBody.classList.add('hide');
+            }
+            const chromaColor = clip.chromakeyColor || '#00ff00';
+            if (DOM.propChromakeyColor) DOM.propChromakeyColor.value = chromaColor;
+            if (DOM.propChromakeyColorText) DOM.propChromakeyColorText.value = chromaColor;
+            
+            const sim = Math.round((clip.chromakeySimilarity !== undefined ? clip.chromakeySimilarity : 0.25) * 100);
+            if (DOM.propChromakeySim) DOM.propChromakeySim.value = sim;
+            if (DOM.propChromakeySimVal) DOM.propChromakeySimVal.textContent = `${sim}%`;
+
+            const blend = Math.round((clip.chromakeyBlend !== undefined ? clip.chromakeyBlend : 0.1) * 100);
+            if (DOM.propChromakeyBlend) DOM.propChromakeyBlend.value = blend;
+            if (DOM.propChromakeyBlendVal) DOM.propChromakeyBlendVal.textContent = `${blend}%`;
+        } else {
+            DOM.chromakeyPropertiesSection.classList.add('hide');
+        }
+    }
+}
+
+// --- 크로마키 스포이드 제어 ---
+let isEyedropperActive = false;
+
+function activateEyedropper() {
+    // 1. 최신 브라우저 네이티브 EyeDropper API (Chrome/Edge 지원)
+    if (window.EyeDropper) {
+        const eyeDropper = new EyeDropper();
+        eyeDropper.open().then(result => {
+            if (result && result.sRGBHex) {
+                applyEyedropperColor(result.sRGBHex);
+            }
+        }).catch(err => {
+            console.log('[LookVideoEditor] 스포이드 취소:', err);
+        });
+        return;
+    }
+
+    // 2. 미지원 브라우저: 프리뷰 캔버스 클릭 샘플링 모드 활성화
+    isEyedropperActive = true;
+    if (DOM.previewCanvas) DOM.previewCanvas.classList.add('eyedropper-active');
+    if (DOM.btnChromakeyEyedropper) {
+        DOM.btnChromakeyEyedropper.classList.add('active');
+        DOM.btnChromakeyEyedropper.title = '프리뷰 화면에서 추출할 색상을 클릭하세요 (ESC: 취소)';
+    }
+}
+
+function applyEyedropperColor(hexColor) {
+    if (!STATE.selectedClipId) return;
+    const clip = STATE.clips.find(c => c.id === STATE.selectedClipId);
+    if (!clip) return;
+
+    clip.chromakeyColor = hexColor.toLowerCase();
+    if (DOM.propChromakeyColor) DOM.propChromakeyColor.value = clip.chromakeyColor;
+    if (DOM.propChromakeyColorText) DOM.propChromakeyColorText.value = clip.chromakeyColor;
+    
+    deactivateEyedropper();
+    renderPreview();
+}
+
+function deactivateEyedropper() {
+    isEyedropperActive = false;
+    if (DOM.previewCanvas) DOM.previewCanvas.classList.remove('eyedropper-active');
+    if (DOM.btnChromakeyEyedropper) {
+        DOM.btnChromakeyEyedropper.classList.remove('active');
+        DOM.btnChromakeyEyedropper.title = '스포이드로 화면 색상 추출';
     }
 }
 
@@ -2202,9 +2624,34 @@ function updateSelectedClipFromInputs(e) {
                 }
             } catch (e) {}
             if (DOM.propTextOpacityLabel) DOM.propTextOpacityLabel.textContent = `${clip.textOpacity}%`;
-        } else if (clip.overlayType === 'image') {
-            clip.width = parseInt(DOM.propImgWidth.value) || 150;
-            clip.height = parseInt(DOM.propImgHeight.value) || 150;
+        } else if (clip.overlayType === 'image' || clip.overlayType === 'video') {
+            clip.width = parseInt(DOM.propImgWidth.value) || (clip.overlayType === 'video' ? 480 : 150);
+            clip.height = parseInt(DOM.propImgHeight.value) || (clip.overlayType === 'video' ? 270 : 150);
+        }
+    }
+
+    // 크로마키 속성 동기화 (Video Track 2 또는 Overlay Track)
+    if (DOM.propChromakeyEnable && (clip.track === 'video2' || clip.track === 'overlay')) {
+        const isEnabled = DOM.propChromakeyEnable.checked;
+        const prevEnabled = !!clip.chromakey;
+        clip.chromakey = isEnabled;
+        if (DOM.chromakeyControlsBody) {
+            if (isEnabled) DOM.chromakeyControlsBody.classList.remove('hide');
+            else DOM.chromakeyControlsBody.classList.add('hide');
+        }
+
+        clip.chromakeyColor = (DOM.propChromakeyColor ? DOM.propChromakeyColor.value : (clip.chromakeyColor || '#00ff00')).toLowerCase();
+        
+        const simVal = DOM.propChromakeySim ? parseInt(DOM.propChromakeySim.value) : 25;
+        clip.chromakeySimilarity = (isNaN(simVal) ? 25 : simVal) / 100;
+        if (DOM.propChromakeySimVal) DOM.propChromakeySimVal.textContent = Math.round(clip.chromakeySimilarity * 100);
+
+        const blendVal = DOM.propChromakeyBlend ? parseInt(DOM.propChromakeyBlend.value) : 10;
+        clip.chromakeyBlend = (isNaN(blendVal) ? 10 : blendVal) / 100;
+        if (DOM.propChromakeyBlendVal) DOM.propChromakeyBlendVal.textContent = Math.round(clip.chromakeyBlend * 100);
+
+        if (prevEnabled !== isEnabled) {
+            updateTimelineClipsUI();
         }
     }
 
@@ -3545,6 +3992,105 @@ function formatTimeShort(seconds) {
     return `${m}:${s.toString().padStart(2, '0')}`;
 }
 
+/**
+ * 16진수 색상 (#rrggbb) 문자열을 [r, g, b] 정수 배열로 파싱
+ */
+function parseHexColor(hex) {
+    if (!hex) return [0, 255, 0];
+    const clean = String(hex).replace('#', '').trim();
+    if (clean.length === 3) {
+        return [
+            parseInt(clean[0] + clean[0], 16),
+            parseInt(clean[1] + clean[1], 16),
+            parseInt(clean[2] + clean[2], 16)
+        ];
+    }
+    if (clean.length >= 6) {
+        return [
+            parseInt(clean.slice(0, 2), 16),
+            parseInt(clean.slice(2, 4), 16),
+            parseInt(clean.slice(4, 6), 16)
+        ];
+    }
+    return [0, 255, 0];
+}
+
+/**
+ * 소스 이미지/비디오 프레임에 크로마키(단색 투명화)를 적용하여 반환
+ * FFmpeg colorkey=color:similarity:blend 필터와 동일한 유클리드 거리 기반 투명화 연산
+ */
+function applyChromaKeyToOffscreen(sourceEl, width, height, colorHex, similarity, blend) {
+    const w = Math.max(1, Math.round(width));
+    const h = Math.max(1, Math.round(height));
+
+    if (chromaOffscreenCanvas.width !== w || chromaOffscreenCanvas.height !== h) {
+        chromaOffscreenCanvas.width = w;
+        chromaOffscreenCanvas.height = h;
+    }
+
+    chromaOffscreenCtx.clearRect(0, 0, w, h);
+    try {
+        chromaOffscreenCtx.drawImage(sourceEl, 0, 0, w, h);
+    } catch (e) {
+        return chromaOffscreenCanvas;
+    }
+
+    let imgData;
+    try {
+        imgData = chromaOffscreenCtx.getImageData(0, 0, w, h);
+    } catch (e) {
+        // 교차 출처(CORS) 등으로 읽기 불가 시 원본 유지
+        return chromaOffscreenCanvas;
+    }
+
+    const data = imgData.data;
+    const len = data.length;
+
+    const [keyR, keyG, keyB] = parseHexColor(colorHex);
+    // similarity: 0.01 ~ 1.0 (기본 0.25), blend: 0.0 ~ 0.5 (기본 0.1)
+    const sim = (similarity !== undefined && !isNaN(similarity)) ? similarity : 0.25;
+    const bl = (blend !== undefined && !isNaN(blend)) ? blend : 0.1;
+
+    // FFmpeg colorkey 필터와 동일한 방식:
+    // dist <= simDist 이면 완전 투명(alpha = 0)
+    // simDist < dist < simDist + blendDist 이면 (dist - simDist)/blendRange 로 페더링 블렌딩
+    // dist >= simDist + blendDist 이면 완전 불투명(원본 alpha 유지)
+    const MAX_DIST = 441.6729559;
+    const simDist = sim * MAX_DIST;
+    const blendDist = bl * MAX_DIST;
+    const outerDist = simDist + blendDist;
+
+    const simDistSq = simDist * simDist;
+    const outerDistSq = outerDist * outerDist;
+
+    for (let i = 0; i < len; i += 4) {
+        const a = data[i + 3];
+        if (a === 0) continue; // 이미 투명한 픽셀 건너뜀
+
+        const r = data[i];
+        const g = data[i + 1];
+        const b = data[i + 2];
+
+        const dr = r - keyR;
+        const dg = g - keyG;
+        const db = b - keyB;
+        const distSq = dr * dr + dg * dg + db * db;
+
+        if (distSq <= simDistSq) {
+            // 완전 투명화 (FFmpeg colorkey 유사도 이내)
+            data[i + 3] = 0;
+        } else if (blendDist > 0.001 && distSq < outerDistSq) {
+            // 경계 블렌딩 (소프트 엣지 페더링)
+            const dist = Math.sqrt(distSq);
+            const alphaFactor = (dist - simDist) / blendDist;
+            data[i + 3] = Math.round(a * Math.max(0, Math.min(1, alphaFactor)));
+        }
+    }
+
+    chromaOffscreenCtx.putImageData(imgData, 0, 0);
+    return chromaOffscreenCanvas;
+}
+
 // --- 실시간 프리뷰 렌더러 (해상도 가변 Canvas Rendering Engine) ---
 function renderPreview() {
     const time = STATE.playheadTime;
@@ -3602,18 +4148,48 @@ function renderPreview() {
                 const imgW = (clip.width || 150) * scaleX;
                 const imgH = (clip.height || 150) * scaleY;
                 
-                const img = new Image();
-                img.src = asset.url;
-                if (img.complete) {
-                    ctx.drawImage(img, imgX, imgY, imgW, imgH);
+                const drawOverlayImg = (sourceImg) => {
+                    if (clip.chromakey) {
+                        const keyedCanvas = applyChromaKeyToOffscreen(
+                            sourceImg,
+                            imgW,
+                            imgH,
+                            clip.chromakeyColor || '#00ff00',
+                            clip.chromakeySimilarity !== undefined ? clip.chromakeySimilarity : 0.25,
+                            clip.chromakeyBlend !== undefined ? clip.chromakeyBlend : 0.1
+                        );
+                        ctx.drawImage(keyedCanvas, imgX, imgY, imgW, imgH);
+                    } else {
+                        ctx.drawImage(sourceImg, imgX, imgY, imgW, imgH);
+                    }
+                };
+
+                const cached = getAssetImage(asset);
+                if (cached) {
+                    drawOverlayImg(cached);
                 } else {
-                    img.onload = () => {
-                        if (STATE.playheadTime === time) {
-                            ctx.drawImage(img, imgX, imgY, imgW, imgH);
-                        }
-                    };
+                    const img = new Image();
+                    img.crossOrigin = 'anonymous';
+                    img.src = asset.url;
+                    if (img.complete && img.naturalWidth > 0) {
+                        drawOverlayImg(img);
+                    } else {
+                        img.onload = () => {
+                            if (STATE.playheadTime === time) {
+                                drawOverlayImg(img);
+                            }
+                        };
+                    }
                 }
             }
+        } else if (clip.overlayType === 'video') {
+            const scaleX = canvasW / 1280;
+            const scaleY = canvasH / 720;
+            const vidX = (clip.x || 0) * scaleX;
+            const vidY = (clip.y || 0) * scaleY;
+            const vidW = (clip.width || 480) * scaleX;
+            const vidH = (clip.height || 270) * scaleY;
+            drawVideoClip(clip, time, vidX, vidY, vidW, vidH, false);
         } else if (clip.overlayType === 'text') {
             const scale = canvasW / 1280;
             ctx.fillStyle = hexToRgba(clip.textColor || '#ffffff', clip.textOpacity);
@@ -3701,8 +4277,10 @@ function getAssetImage(asset) {
     if (!asset || !asset.url) return null;
     let entry = assetImageCache[asset.id];
     if (!entry || entry.url !== asset.url) {
-        entry = { url: asset.url, img: new Image() };
-        entry.img.src = asset.url;
+        const img = new Image();
+        img.crossOrigin = 'anonymous';
+        img.src = asset.url;
+        entry = { url: asset.url, img };
         assetImageCache[asset.id] = entry;
     }
     return (entry.img.complete && entry.img.naturalWidth > 0) ? entry.img : null;
@@ -3809,7 +4387,19 @@ function drawVideoClip(clip, time, x, y, w, h, letterbox) {
     const drawH = fit.h * zoomScale;
 
     try {
-        ctx.drawImage(player || image, -drawW / 2, -drawH / 2, drawW, drawH);
+        if (clip.chromakey) {
+            const keyedCanvas = applyChromaKeyToOffscreen(
+                player || image,
+                drawW,
+                drawH,
+                clip.chromakeyColor || '#00ff00',
+                clip.chromakeySimilarity !== undefined ? clip.chromakeySimilarity : 0.25,
+                clip.chromakeyBlend !== undefined ? clip.chromakeyBlend : 0.1
+            );
+            ctx.drawImage(keyedCanvas, -drawW / 2, -drawH / 2, drawW, drawH);
+        } else {
+            ctx.drawImage(player || image, -drawW / 2, -drawH / 2, drawW, drawH);
+        }
     } catch (e) {
         ctx.fillStyle = '#1a1a20';
         ctx.fillRect(-drawW / 2, -drawH / 2, drawW, drawH);
@@ -5030,7 +5620,7 @@ async function startWebpExportFromModal() {
 function buildWebpOutputPath() {
     const stamp = formatDateForFilename(new Date());
     const reelsFolder = String(currentReelsFolder || '');
-    const safeFolder = /^[\w가-힣\-_]+$/.test(reelsFolder) ? reelsFolder : '';
+    const safeFolder = (reelsFolder !== '__ALL__' && /^[\w가-힣\-_]+$/.test(reelsFolder)) ? reelsFolder : '';
     return safeFolder
         ? `..\\samples\\${safeFolder}\\reels\\webp_${stamp}.webp`
         : `output\\webp_${stamp}.webp`;

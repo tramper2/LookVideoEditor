@@ -184,12 +184,26 @@ function generateFFmpegCommand(projectState) {
         return { clip, inputIdx };
     });
 
-    // 4. Overlay PNG 이미지 입력 정의 (텍스트 제외한 이미지 클립만)
+    // 4. Overlay 이미지 및 비디오 입력 정의
     const imageClips = overlayClips.filter(c => c.overlayType === 'image');
     const imageMappings = imageClips.map((clip, index) => {
         const inputIdx = currentInputIndex++;
         inputs.push(`-i "${clip.localPath}"`);
         rawInputs.push({
+            path: clip.localPath
+        });
+        return { clip, inputIdx };
+    });
+
+    // 4-1. Overlay 비디오 입력 정의 (오버레이 트랙의 비디오 클립)
+    const overlayVideoClips = overlayClips.filter(c => c.overlayType === 'video');
+    const overlayVideoMappings = overlayVideoClips.map((clip, index) => {
+        const inputIdx = currentInputIndex++;
+        const srcDur = clip.sourceEnd - clip.sourceStart;
+        inputs.push(`-ss ${formatTime(clip.sourceStart)} -t ${formatTime(srcDur)} -i "${clip.localPath}"`);
+        rawInputs.push({
+            ss: formatTime(clip.sourceStart),
+            t: formatTime(srcDur),
             path: clip.localPath
         });
         return { clip, inputIdx };
@@ -367,6 +381,17 @@ function generateFFmpegCommand(projectState) {
             });
         }
         
+        // 2.4.1 크로마키 (단색 배경 투명화)
+        if (clip.chromakey) {
+            const hex = (clip.chromakeyColor || '#00ff00').replace('#', '0x');
+            const simNum = clip.chromakeySimilarity !== undefined ? (clip.chromakeySimilarity > 1 ? clip.chromakeySimilarity / 100 : clip.chromakeySimilarity) : 0.25;
+            const sim = Math.max(0.01, Math.min(1.0, simNum)).toFixed(2);
+            const blendNum = clip.chromakeyBlend !== undefined ? (clip.chromakeyBlend > 1 ? clip.chromakeyBlend / 100 : clip.chromakeyBlend) : 0.1;
+            const blend = Math.max(0.0, Math.min(0.5, blendNum)).toFixed(2);
+            vFilters.push(`colorkey=${hex}:${sim}:${blend}`);
+            vFilters.push("format=yuva420p");
+        }
+
         vFilters.push(`fps=${outFPS}`);
         
         // 2.5 타임라인 위치로 PTS 이동 (overlay 프레임싱크 정합, Video Track 1 과 동일한 이유)
@@ -426,7 +451,7 @@ function generateFFmpegCommand(projectState) {
         audioMixInputs.push(`[${aDelayed}]`);
     });
     
-    // 4. Overlay PNG 이미지 합성
+    // 4. Overlay PNG 이미지 합성 (크로마키 지원)
     imageMappings.forEach((mapping, i) => {
         const { clip, inputIdx } = mapping;
         const scaleX = outW / 1280;
@@ -436,12 +461,71 @@ function generateFFmpegCommand(projectState) {
         const imgX = Math.round(clip.x * scaleX);
         const imgY = Math.round(clip.y * scaleY);
         
+        let imgFilters = [`scale=${imgW}:${imgH}`, "setsar=1"];
+        if (clip.chromakey) {
+            const hex = (clip.chromakeyColor || '#00ff00').replace('#', '0x');
+            const simNum = clip.chromakeySimilarity !== undefined ? (clip.chromakeySimilarity > 1 ? clip.chromakeySimilarity / 100 : clip.chromakeySimilarity) : 0.25;
+            const sim = Math.max(0.01, Math.min(1.0, simNum)).toFixed(2);
+            const blendNum = clip.chromakeyBlend !== undefined ? (clip.chromakeyBlend > 1 ? clip.chromakeyBlend / 100 : clip.chromakeyBlend) : 0.1;
+            const blend = Math.max(0.0, Math.min(0.5, blendNum)).toFixed(2);
+            imgFilters.push(`colorkey=${hex}:${sim}:${blend}`);
+            imgFilters.push("format=yuva420p");
+        }
+
         const imgProcessed = `img_${inputIdx}`;
-        filterComplex.push(`[${inputIdx}:v]scale=${imgW}:${imgH},setsar=1[${imgProcessed}]`);
+        filterComplex.push(`[${inputIdx}:v]${imgFilters.join(",")}[${imgProcessed}]`);
         
         const nextVideoNode = `v_img_overlay_${inputIdx}`;
         const endTimeline = clip.timelineStart + clip.duration;
         filterComplex.push(`[${currentVideoNode}][${imgProcessed}]overlay=x=${imgX}:y=${imgY}:enable='between(t,${clip.timelineStart.toFixed(2)},${endTimeline.toFixed(2)})'[${nextVideoNode}]`);
+        currentVideoNode = nextVideoNode;
+    });
+
+    // 4-1. Overlay 비디오 합성 (크로마키 지원)
+    overlayVideoMappings.forEach((mapping, i) => {
+        const { clip, inputIdx } = mapping;
+        const scaleX = outW / 1280;
+        const scaleY = outH / 720;
+        const vidW = Math.round((clip.width || 320) * scaleX);
+        const vidH = Math.round((clip.height || 180) * scaleY);
+        const vidX = Math.round(clip.x * scaleX);
+        const vidY = Math.round(clip.y * scaleY);
+
+        let vFilters = [];
+        if (clip.rotation === 90) vFilters.push("transpose=1");
+        else if (clip.rotation === 180) vFilters.push("transpose=2,transpose=2");
+        else if (clip.rotation === 270) vFilters.push("transpose=2");
+
+        vFilters.push(`scale=${vidW}:${vidH}`);
+        vFilters.push("setsar=1");
+
+        const speed = clip.speed || 1.0;
+        if (Math.abs(speed - 1.0) > 0.01) {
+            vFilters.push(`setpts=PTS/${speed}`);
+        }
+
+        if (clip.chromakey) {
+            const hex = (clip.chromakeyColor || '#00ff00').replace('#', '0x');
+            const simNum = clip.chromakeySimilarity !== undefined ? (clip.chromakeySimilarity > 1 ? clip.chromakeySimilarity / 100 : clip.chromakeySimilarity) : 0.25;
+            const sim = Math.max(0.01, Math.min(1.0, simNum)).toFixed(2);
+            const blendNum = clip.chromakeyBlend !== undefined ? (clip.chromakeyBlend > 1 ? clip.chromakeyBlend / 100 : clip.chromakeyBlend) : 0.1;
+            const blend = Math.max(0.0, Math.min(0.5, blendNum)).toFixed(2);
+            vFilters.push(`colorkey=${hex}:${sim}:${blend}`);
+            vFilters.push("format=yuva420p");
+        }
+
+        const timelineOffset = clip.timelineStart || 0;
+        if (timelineOffset > 0.001) {
+            vFilters.push(`setpts=PTS+${timelineOffset.toFixed(2)}/TB`);
+        }
+        vFilters.push(`fps=${outFPS}`);
+
+        const vidProcessed = `vid_overlay_${inputIdx}`;
+        filterComplex.push(`[${inputIdx}:v]${vFilters.join(",")}[${vidProcessed}]`);
+
+        const nextVideoNode = `v_vid_overlay_node_${inputIdx}`;
+        const endTimeline = clip.timelineStart + clip.duration;
+        filterComplex.push(`[${currentVideoNode}][${vidProcessed}]overlay=x=${vidX}:y=${vidY}:enable='between(t,${clip.timelineStart.toFixed(2)},${endTimeline.toFixed(2)})'[${nextVideoNode}]`);
         currentVideoNode = nextVideoNode;
     });
     
@@ -520,7 +604,7 @@ function generateFFmpegCommand(projectState) {
     const filterString = filterComplex.join(";");
     // 출력 경로: 릴스 폴더 선택 시 samples/{폴더}/reels/에 저장, 아니면 기존 output/
     const reelsFolder = String(projectState.reelsFolder || '');
-    const safeFolder = /^[\w가-힣\-_]+$/.test(reelsFolder) ? reelsFolder : '';
+    const safeFolder = (reelsFolder !== '__ALL__' && /^[\w가-힣\-_]+$/.test(reelsFolder)) ? reelsFolder : '';
     const outputFilename = safeFolder
         ? `..\\samples\\${safeFolder}\\reels\\rendered_${formatDateForFilename(new Date())}.mp4`
         : `output\\rendered_${formatDateForFilename(new Date())}.mp4`;
