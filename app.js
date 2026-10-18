@@ -1900,7 +1900,7 @@ async function extractScenePhoto() {
         console.warn('Canvas toDataURL failed:', e);
     }
 
-    // 6. 서버로 추출 및 저장 요청 (해당 동영상 폴더 안의 '추출사진' 폴더로 저장)
+    // 6. 서버로 추출 및 저장 요청 (현재 작업 폴더 안의 '추출사진' 폴더로 저장)
     try {
         const payload = {
             videoPath: targetClip.localPath || '',

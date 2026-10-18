@@ -39,18 +39,20 @@ const VIDEO_EXTS = new Set(['.mp4', '.mov', '.webm', '.avi', '.m4v', '.mkv']);
  * 기본 작업 폴더 조회 (Single Source of Truth: .env & data/work_dir.json)
  */
 function getWorkDir() {
-    if (process.env.WORK_DIR && fs.existsSync(process.env.WORK_DIR)) {
-        return path.resolve(process.env.WORK_DIR);
-    }
+    // 1. data/work_dir.json 실시간 조회 (Single Source of Truth)
     try {
         const jsonPath = path.join(PROJECT_ROOT, 'data', 'work_dir.json');
         if (fs.existsSync(jsonPath)) {
             const data = JSON.parse(fs.readFileSync(jsonPath, 'utf8'));
             if (data.work_dir && fs.existsSync(data.work_dir)) {
-                return path.resolve(data.work_dir);
+                const resolved = path.resolve(data.work_dir);
+                process.env.WORK_DIR = resolved;
+                return resolved;
             }
         }
     } catch (e) {}
+
+    // 2. 루트 .env 실시간 조회
     try {
         const envPath = path.join(PROJECT_ROOT, '.env');
         if (fs.existsSync(envPath)) {
@@ -63,12 +65,21 @@ function getWorkDir() {
                         val = val.slice(1, -1).trim();
                     }
                     if (val && fs.existsSync(val)) {
-                        return path.resolve(val);
+                        const resolved = path.resolve(val);
+                        process.env.WORK_DIR = resolved;
+                        return resolved;
                     }
                 }
             }
         }
     } catch (e) {}
+
+    // 3. 프로세스 환경변수
+    if (process.env.WORK_DIR && fs.existsSync(process.env.WORK_DIR)) {
+        return path.resolve(process.env.WORK_DIR);
+    }
+
+    // 4. 기본 samples 폴더
     const def = path.join(PROJECT_ROOT, 'samples');
     if (!fs.existsSync(def)) {
         try { fs.mkdirSync(def, { recursive: true }); } catch (e) {}
@@ -1772,17 +1783,25 @@ const server = http.createServer(async (req, res) => {
                     } catch (e) {}
                 }
 
-                // 동영상이 있는 폴더 찾기
-                let targetDir;
-                if (resolvedVideoPath) {
-                    targetDir = path.dirname(resolvedVideoPath);
+                // 저장 대상 기본 폴더 결정:
+                // 1순위: 현재 설정된 기본 작업 폴더 (Work Dir)
+                // 2순위: 클라이언트 지정 폴더 (targetDir)
+                // 3순위: 동영상 원본 폴더 (resolvedVideoPath)
+                // 4순위: 서버 output 폴더
+                const currentWorkDir = getWorkDir();
+                let baseDir;
+                if (currentWorkDir && fs.existsSync(currentWorkDir)) {
+                    baseDir = currentWorkDir;
+                } else if (data.targetDir && fs.existsSync(data.targetDir)) {
+                    baseDir = path.resolve(data.targetDir);
+                } else if (resolvedVideoPath) {
+                    baseDir = path.dirname(resolvedVideoPath);
                 } else {
-                    // 비디오 경로가 없는 경우 기본 output 폴더 사용
-                    targetDir = path.join(ROOT_DIR, 'output');
+                    baseDir = path.join(ROOT_DIR, 'output');
                 }
 
-                // 해당 동영상이 있는 폴더에 '추출사진' 폴더 생성
-                const extractDir = path.join(targetDir, '추출사진');
+                // 현재 작업 폴더 하위에 '추출사진' 폴더 생성 및 저장
+                const extractDir = path.join(baseDir, '추출사진');
                 if (!fs.existsSync(extractDir)) {
                     fs.mkdirSync(extractDir, { recursive: true });
                 }
@@ -1954,7 +1973,13 @@ const server = http.createServer(async (req, res) => {
         req.on('end', () => {
             try {
                 const data = JSON.parse(body || '{}');
-                const folderPath = data.folder ? path.resolve(data.folder) : (data.path ? path.dirname(path.resolve(data.path)) : null);
+                let folderPath = data.folder ? path.resolve(data.folder) : (data.path ? path.dirname(path.resolve(data.path)) : null);
+                if (!folderPath || !fs.existsSync(folderPath)) {
+                    const fallbackDir = path.join(getWorkDir(), '추출사진');
+                    if (fs.existsSync(fallbackDir)) {
+                        folderPath = fallbackDir;
+                    }
+                }
                 if (folderPath && fs.existsSync(folderPath)) {
                     spawn('explorer.exe', [folderPath], { detached: true, stdio: 'ignore' }).unref();
                     res.writeHead(200, { 'Content-Type': 'application/json' });
