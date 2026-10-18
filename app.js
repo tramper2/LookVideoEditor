@@ -1379,7 +1379,56 @@ function hexToRgba(hex, opacityPercent) {
     return `rgba(${r},${g},${b},${a.toFixed(2)})`;
 }
 
+// 작업 폴더 동기화
+async function updateWorkDirDisplay() {
+    const textEl = document.getElementById('current-work-dir-text');
+    try {
+        const res = await fetch('/api/work-dir', { cache: 'no-store' });
+        if (!res.ok) return;
+        const data = await res.json();
+        if (data.success && textEl) {
+            textEl.textContent = data.work_dir;
+            textEl.title = data.work_dir;
+            return data.work_dir;
+        }
+    } catch (e) {
+        if (textEl) textEl.textContent = '조회 실패';
+    }
+    return '';
+}
+
+function setupWorkDirControls() {
+    const btn = document.getElementById('btn-change-work-dir');
+    if (!btn || btn.dataset.bound) return;
+    btn.dataset.bound = 'true';
+    btn.addEventListener('click', async () => {
+        const textEl = document.getElementById('current-work-dir-text');
+        const cur = textEl ? textEl.textContent.trim() : '';
+        const target = prompt('새로운 기본 작업 폴더 절대 경로를 입력하세요:\n(예: D:\\MyProducts 또는 C:\\work\\items)', cur);
+        if (!target || !target.trim()) return;
+        try {
+            const res = await fetch('/api/work-dir', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ work_dir: target.trim() })
+            });
+            const d = await res.json();
+            if (d.success) {
+                alert(`작업 폴더가 변경되었습니다:\n${d.work_dir}`);
+                await updateWorkDirDisplay();
+                await loadReels();
+            } else {
+                alert('폴더 변경 실패: ' + (d.error || '알 수 없는 오류'));
+            }
+        } catch (err) {
+            alert('서버 통신 실패: ' + err.message);
+        }
+    });
+}
+
 async function loadReels() {
+    await updateWorkDirDisplay();
+    setupWorkDirControls();
     try {
         const res = await fetch('/api/reels/list', { cache: 'no-store' });
         if (!res.ok) throw new Error(`HTTP ${res.status}`);

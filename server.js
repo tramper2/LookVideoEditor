@@ -35,6 +35,98 @@ const ROOT_DIR = __dirname;
 const PROJECT_ROOT = path.resolve(ROOT_DIR, '..');
 const VIDEO_EXTS = new Set(['.mp4', '.mov', '.webm', '.avi', '.m4v', '.mkv']);
 
+/**
+ * 기본 작업 폴더 조회 (Single Source of Truth: .env & data/work_dir.json)
+ */
+function getWorkDir() {
+    if (process.env.WORK_DIR && fs.existsSync(process.env.WORK_DIR)) {
+        return path.resolve(process.env.WORK_DIR);
+    }
+    try {
+        const jsonPath = path.join(PROJECT_ROOT, 'data', 'work_dir.json');
+        if (fs.existsSync(jsonPath)) {
+            const data = JSON.parse(fs.readFileSync(jsonPath, 'utf8'));
+            if (data.work_dir && fs.existsSync(data.work_dir)) {
+                return path.resolve(data.work_dir);
+            }
+        }
+    } catch (e) {}
+    try {
+        const envPath = path.join(PROJECT_ROOT, '.env');
+        if (fs.existsSync(envPath)) {
+            const content = fs.readFileSync(envPath, 'utf8');
+            for (const line of content.split(/\r?\n/)) {
+                const trimmed = line.trim();
+                if (trimmed.startsWith('WORK_DIR=')) {
+                    let val = trimmed.slice(9).trim();
+                    if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) {
+                        val = val.slice(1, -1).trim();
+                    }
+                    if (val && fs.existsSync(val)) {
+                        return path.resolve(val);
+                    }
+                }
+            }
+        }
+    } catch (e) {}
+    const def = path.join(PROJECT_ROOT, 'samples');
+    if (!fs.existsSync(def)) {
+        try { fs.mkdirSync(def, { recursive: true }); } catch (e) {}
+    }
+    return def;
+}
+
+/**
+ * 기본 작업 폴더 설정 및 영구 저장 (.env & data/work_dir.json)
+ */
+function setWorkDir(newDir) {
+    if (!newDir || typeof newDir !== 'string') {
+        return { success: false, error: '유효한 경로를 입력해 주세요.' };
+    }
+    const resolved = path.isAbsolute(newDir) ? path.resolve(newDir) : path.resolve(PROJECT_ROOT, newDir);
+    if (!fs.existsSync(resolved)) {
+        return { success: false, error: `폴더가 존재하지 않습니다: ${resolved}` };
+    }
+    try {
+        const stat = fs.statSync(resolved);
+        if (!stat.isDirectory()) {
+            return { success: false, error: `디렉터리가 아닙니다: ${resolved}` };
+        }
+    } catch (e) {
+        return { success: false, error: e.message };
+    }
+
+    process.env.WORK_DIR = resolved;
+
+    try {
+        const dataDir = path.join(PROJECT_ROOT, 'data');
+        if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
+        const jsonPath = path.join(dataDir, 'work_dir.json');
+        fs.writeFileSync(jsonPath, JSON.stringify({
+            work_dir: resolved,
+            updated_at: new Date().toISOString()
+        }, null, 2), 'utf8');
+    } catch (e) {
+        console.error('[LookVideoEditor] work_dir.json 저장 실패:', e);
+    }
+
+    try {
+        const envPath = path.join(PROJECT_ROOT, '.env');
+        let content = fs.existsSync(envPath) ? fs.readFileSync(envPath, 'utf8') : '';
+        const re = /^WORK_DIR=.*$/m;
+        if (re.test(content)) {
+            content = content.replace(re, `WORK_DIR=${resolved}`);
+        } else {
+            content = (content ? content.trimEnd() + '\n' : '') + `WORK_DIR=${resolved}\n`;
+        }
+        fs.writeFileSync(envPath, content, 'utf8');
+    } catch (e) {
+        console.error('[LookVideoEditor] .env 갱신 실패:', e);
+    }
+
+    return { success: true, work_dir: resolved, name: path.basename(resolved) || resolved };
+}
+
 // MIME 타입 매핑
 const MIME_TYPES = {
     '.html': 'text/html; charset=utf-8',
@@ -523,6 +615,37 @@ const server = http.createServer(async (req, res) => {
 
     // --- API 엔드포인트 ---
 
+    // 0. 기본 작업 폴더 조회
+    if (pathname === '/api/work-dir' && req.method === 'GET') {
+        const wDir = getWorkDir();
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+            success: true,
+            work_dir: wDir,
+            name: path.basename(wDir) || wDir,
+            exists: fs.existsSync(wDir)
+        }));
+        return;
+    }
+
+    // 0-1. 기본 작업 폴더 변경
+    if (pathname === '/api/work-dir' && req.method === 'POST') {
+        let body = '';
+        req.on('data', chunk => { body += chunk; });
+        req.on('end', () => {
+            try {
+                const data = JSON.parse(body || '{}');
+                const result = setWorkDir(data.work_dir || '');
+                res.writeHead(result.success ? 200 : 400, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify(result));
+            } catch (err) {
+                res.writeHead(400, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ success: false, error: err.message }));
+            }
+        });
+        return;
+    }
+
     // 1. 서버 상태 확인
     if (pathname === '/api/ping' && req.method === 'GET') {
         const ffmpegBin = getFFmpegBinary();
@@ -773,6 +896,12 @@ const server = http.createServer(async (req, res) => {
                     return;
                 }
 
+                let targetOutputFile = outputFile || path.join('output', `rendered_${Date.now()}.mp4`);
+                if (typeof targetOutputFile === 'string' && (targetOutputFile.startsWith('..\\samples') || targetOutputFile.startsWith('../samples') || targetOutputFile.startsWith('samples/') || targetOutputFile.startsWith('samples\\'))) {
+                    const relPart = targetOutputFile.replace(/^(\.\.[\\/])?samples[\\/]/, '');
+                    targetOutputFile = path.join(getWorkDir(), relPart);
+                }
+
                 // 상태 초기화
                 renderState = {
                     isRendering: true,
@@ -783,14 +912,15 @@ const server = http.createServer(async (req, res) => {
                     speed: "0x",
                     status: "rendering",
                     error: null,
-                    outputFile: outputFile || path.join('output', `rendered_${Date.now()}.mp4`),
+                    outputFile: targetOutputFile,
                     startTime: Date.now(),
                     elapsedTime: "00:00"
                 };
 
-                // 출력 경로 검증 (프로젝트 루트 밖 경로 차단)
+                // 출력 경로 검증 (프로젝트 루트 또는 현재 작업 폴더 허용)
                 const resolvedOutput = path.resolve(ROOT_DIR, renderState.outputFile);
-                const outputAllowed = [PROJECT_ROOT, ROOT_DIR].some(root =>
+                const currentWorkDir = getWorkDir();
+                const outputAllowed = [PROJECT_ROOT, ROOT_DIR, currentWorkDir].some(root =>
                     resolvedOutput === root || resolvedOutput.startsWith(root + path.sep)
                 );
                 if (!outputAllowed) {
@@ -995,9 +1125,16 @@ const server = http.createServer(async (req, res) => {
                 return;
             }
 
-            // 출력 경로 검증 (프로젝트 루트 밖 경로 차단)
-            const resolvedOutput = path.resolve(ROOT_DIR, outputFile);
-            const outputAllowed = [PROJECT_ROOT, ROOT_DIR].some(root =>
+            let targetOutputFile = outputFile;
+            if (typeof targetOutputFile === 'string' && (targetOutputFile.startsWith('..\\samples') || targetOutputFile.startsWith('../samples') || targetOutputFile.startsWith('samples/') || targetOutputFile.startsWith('samples\\'))) {
+                const relPart = targetOutputFile.replace(/^(\.\.[\\/])?samples[\\/]/, '');
+                targetOutputFile = path.join(getWorkDir(), relPart);
+            }
+
+            // 출력 경로 검증 (프로젝트 루트 또는 현재 작업 폴더 허용)
+            const resolvedOutput = path.resolve(ROOT_DIR, targetOutputFile);
+            const currentWorkDir = getWorkDir();
+            const outputAllowed = [PROJECT_ROOT, ROOT_DIR, currentWorkDir].some(root =>
                 resolvedOutput === root || resolvedOutput.startsWith(root + path.sep)
             );
             if (!outputAllowed) {
@@ -1010,7 +1147,7 @@ const server = http.createServer(async (req, res) => {
                 rawInputs, filterComplex, mappedVideo, mappedAudio,
                 rangeStart, rangeDuration, fps,
                 targetBytes: Math.round(targetMB * 1024 * 1024),
-                outputWidth, outputHeight, outputFile,
+                outputWidth, outputHeight, outputFile: targetOutputFile,
                 mode: 'initial',
                 gifEnabled: !!gifEnabled,
                 gifTargetBytes: Math.round(Math.max(0.5, Number(gifTargetMB) || 5) * 1024 * 1024),
@@ -1347,13 +1484,26 @@ const server = http.createServer(async (req, res) => {
         };
 
         try {
-            // 1) samples/{상품}/reels + samples/{상품}/lookbook_reels
-            const samplesDir = path.join(PROJECT_ROOT, 'samples');
-            const folders = new Map(); // 폴더명 -> { name, displayName, count }
-            if (fs.existsSync(samplesDir)) {
-                for (const productDir of fs.readdirSync(samplesDir)) {
-                    const productPath = path.join(samplesDir, productDir);
-                    if (!fs.statSync(productPath).isDirectory()) continue;
+            // 1) work_dir/{상품}/reels + work_dir/{상품}/lookbook_reels (작업 폴더 동적 스캔)
+            const workDir = getWorkDir();
+            const folders = new Map(); // 폴더명 -> { name, displayName, category, count }
+            if (fs.existsSync(workDir)) {
+                let subDirs = [];
+                try {
+                    subDirs = fs.readdirSync(workDir).filter(f => {
+                        try { return fs.statSync(path.join(workDir, f)).isDirectory(); } catch (e) { return false; }
+                    });
+                } catch (e) {}
+
+                // 단일 상품 폴더 자체인지 다중 상품 부모 폴더인지 검사
+                const hasDirectReels = fs.existsSync(path.join(workDir, 'reels')) || fs.existsSync(path.join(workDir, 'lookbook_reels')) || fs.existsSync(path.join(workDir, 'spec.json'));
+                const scanTargets = hasDirectReels
+                    ? [{ name: path.basename(workDir) || 'current', dirPath: workDir }]
+                    : subDirs.map(d => ({ name: d, dirPath: path.join(workDir, d) }));
+
+                for (const target of scanTargets) {
+                    const productDir = target.name;
+                    const productPath = target.dirPath;
                     let count = 0;
                     for (const sub of ['reels', 'lookbook_reels']) {
                         const subPath = path.join(productPath, sub);
@@ -1362,7 +1512,7 @@ const server = http.createServer(async (req, res) => {
                             if (!VIDEO_EXTS.has(path.extname(f).toLowerCase())) continue;
                             const filePath = path.join(subPath, f);
                             if (fs.statSync(filePath).isFile()) {
-                                addReel(filePath, productDir, 'samples');
+                                addReel(filePath, productDir, 'work_dir');
                                 count++;
                             }
                         }
