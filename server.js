@@ -672,6 +672,106 @@ const server = http.createServer(async (req, res) => {
         return;
     }
 
+    // 1-1. Windows 시스템 폰트 목록 조회
+    if (pathname === '/api/system-fonts' && req.method === 'GET') {
+        try {
+            const fontDirs = [
+                'C:\\Windows\\Fonts',
+                path.join(process.env.LOCALAPPDATA || '', 'Microsoft', 'Windows', 'Fonts')
+            ];
+            const fontMap = {
+                'malgun.ttf': { label: '맑은 고딕 (기본)', key: 'malgun', category: 'gothic' },
+                'malgunbd.ttf': { label: '맑은 고딕 Bold', key: 'malgunbd', category: 'gothic' },
+                'h2hdrm.ttf': { label: 'HY헤드라인M (굵은 자막 추천)', key: 'hyhead', category: 'display' },
+                'h2gtrm.ttf': { label: 'HY견고딕 (또렷한 고딕 추천)', key: 'hygothic', category: 'gothic' },
+                'notosanskr-vf.ttf': { label: '본고딕 (Noto Sans KR)', key: 'notosans', category: 'gothic' },
+                'notoserifkr-vf.ttf': { label: '본명조 (Noto Serif KR)', key: 'notoserif', category: 'serif' },
+                'h2porm.ttf': { label: 'HY엽서M (손글씨체)', key: 'hypost', category: 'display' },
+                'h2gsrb.ttf': { label: 'HY궁서B (정통 붓글씨)', key: 'hygungsuh', category: 'serif' },
+                'h2mjre.ttf': { label: 'HY중명조 (명조체)', key: 'hymyungjo', category: 'serif' },
+                'gulim.ttc': { label: '굴림 / 돋움 (Gulim)', key: 'gulim', category: 'gothic' },
+                'batang.ttc': { label: '바탕 / 명조 (Batang)', key: 'batang', category: 'serif' },
+                'ngulim.ttf': { label: '새굴림 (NGulim)', key: 'ngulim', category: 'gothic' },
+                'arial.ttf': { label: 'Arial (영문 전용, 한글 미지원)', key: 'arial', category: 'english' }
+            };
+
+            const installed = [];
+            const seen = new Set();
+
+            fontDirs.forEach(dir => {
+                if (!dir || !fs.existsSync(dir)) return;
+                try {
+                    const files = fs.readdirSync(dir);
+                    files.forEach(file => {
+                        const lower = file.toLowerCase();
+                        const ext = path.extname(lower);
+                        if (['.ttf', '.ttc', '.otf'].includes(ext)) {
+                            if (seen.has(lower)) return;
+                            seen.add(lower);
+                            const fullPath = path.join(dir, file);
+                            const meta = fontMap[lower];
+                            installed.push({
+                                file: file,
+                                lower: lower,
+                                fullPath: fullPath,
+                                label: meta ? meta.label : file,
+                                key: meta ? meta.key : ('custom_' + lower),
+                                isPreset: !!meta,
+                                category: meta ? meta.category : 'other'
+                            });
+                        }
+                    });
+                } catch (e) {}
+            });
+
+            // 프리셋 폰트 우선 정렬
+            installed.sort((a, b) => {
+                if (a.isPreset && !b.isPreset) return -1;
+                if (!a.isPreset && b.isPreset) return 1;
+                return a.label.localeCompare(b.label, 'ko');
+            });
+
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ success: true, fonts: installed }));
+        } catch (err) {
+            res.writeHead(500, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ success: false, error: err.message }));
+        }
+        return;
+    }
+
+    // 1-2. 로컬 폰트 파일 브라우저 서빙 (프리뷰 캔버스 @font-face 지원)
+    if (pathname === '/api/font-file' && req.method === 'GET') {
+        let fontPath = parsedUrl.searchParams.get('path');
+        const fontNameParam = parsedUrl.searchParams.get('name');
+        if (!fontPath && fontNameParam) {
+            const fontName = path.basename(fontNameParam);
+            const winFont = path.join('C:\\Windows\\Fonts', fontName);
+            if (fs.existsSync(winFont)) fontPath = winFont;
+        }
+
+        if (!fontPath || !fs.existsSync(fontPath)) {
+            res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
+            res.end('폰트 파일을 찾을 수 없습니다.');
+            return;
+        }
+
+        const ext = path.extname(fontPath).toLowerCase();
+        let mime = 'application/octet-stream';
+        if (ext === '.ttf') mime = 'font/ttf';
+        else if (ext === '.otf') mime = 'font/otf';
+        else if (ext === '.woff2') mime = 'font/woff2';
+        else if (ext === '.ttc') mime = 'font/collection';
+
+        res.writeHead(200, {
+            'Content-Type': mime,
+            'Cache-Control': 'public, max-age=86400',
+            'Access-Control-Allow-Origin': '*'
+        });
+        fs.createReadStream(fontPath).pipe(res);
+        return;
+    }
+
     // 2. 렌더링 진행률 조회 (Polling / SSE 지원)
     if (pathname === '/api/render/progress' && req.method === 'GET') {
         if (renderState.isRendering && renderState.startTime > 0) {

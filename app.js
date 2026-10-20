@@ -131,8 +131,10 @@ const DOM = {
     propLocalPath: document.getElementById('prop-local-path'),
     propTimelineStart: document.getElementById('prop-timeline-start'),
     propDuration: document.getElementById('prop-duration'),
+    propDurationLabel: document.getElementById('prop-duration-label'),
     propSourceStart: document.getElementById('prop-source-start'),
     propSourceEnd: document.getElementById('prop-source-end'),
+    propCutRow: document.getElementById('prop-cut-row'),
     
     videoPropertiesSection: document.getElementById('video-properties-section'),
     btnPropSeparateAudio: document.getElementById('btn-prop-separate-audio'),
@@ -167,6 +169,13 @@ const DOM = {
     propTextFont: document.getElementById('prop-text-font'),
     propTextFontCustomGroup: document.getElementById('prop-text-font-custom-group'),
     propTextFontCustom: document.getElementById('prop-text-font-custom'),
+    btnBrowseSysFonts: document.getElementById('btn-browse-sys-fonts'),
+    sysFontModal: document.getElementById('sys-font-modal'),
+    btnCloseSysFontModal: document.getElementById('btn-close-sys-font-modal'),
+    btnCancelSysFontModal: document.getElementById('btn-cancel-sys-font-modal'),
+    sysFontSearchInput: document.getElementById('sys-font-search-input'),
+    btnRefreshSysFonts: document.getElementById('btn-refresh-sys-fonts'),
+    sysFontList: document.getElementById('sys-font-list'),
     propImgWidth: document.getElementById('prop-img-width'),
     propImgHeight: document.getElementById('prop-img-height'),
     propTextX: document.getElementById('prop-text-x'),
@@ -1001,6 +1010,14 @@ function setupEventListeners() {
         try {
             const savedFont = localStorage.getItem('look_last_text_font');
             if (savedFont) {
+                // 해당 옵션이 없으면 추가 후 선택
+                let exists = Array.from(DOM.propTextFont.options).some(o => o.value === savedFont);
+                if (!exists) {
+                    const opt = document.createElement('option');
+                    opt.value = savedFont;
+                    opt.textContent = `📁 ${savedFont}`;
+                    DOM.propTextFont.appendChild(opt);
+                }
                 DOM.propTextFont.value = savedFont;
                 if (savedFont === 'custom' && DOM.propTextFontCustomGroup) {
                     DOM.propTextFontCustomGroup.classList.remove('hide');
@@ -1011,6 +1028,34 @@ function setupEventListeners() {
                 }
             }
         } catch (e) {}
+    }
+
+    // Windows 시스템 폰트 탐색 모달 이벤트
+    if (DOM.btnBrowseSysFonts) {
+        DOM.btnBrowseSysFonts.addEventListener('click', () => {
+            openSystemFontModal();
+        });
+    }
+    if (DOM.btnCloseSysFontModal) {
+        DOM.btnCloseSysFontModal.addEventListener('click', () => {
+            DOM.sysFontModal.classList.add('hide');
+        });
+    }
+    if (DOM.btnCancelSysFontModal) {
+        DOM.btnCancelSysFontModal.addEventListener('click', () => {
+            DOM.sysFontModal.classList.add('hide');
+        });
+    }
+    if (DOM.btnRefreshSysFonts) {
+        DOM.btnRefreshSysFonts.addEventListener('click', () => {
+            systemFontsCache = null;
+            loadSystemFonts();
+        });
+    }
+    if (DOM.sysFontSearchInput) {
+        DOM.sysFontSearchInput.addEventListener('input', (e) => {
+            if (systemFontsCache) renderSystemFontList(systemFontsCache, e.target.value);
+        });
     }
 
     DOM.btnDeleteClip.addEventListener('click', () => {
@@ -2195,7 +2240,7 @@ function addTextOverlayClip() {
         sourceStart: 0,
         sourceEnd: duration,
         text: '새로운 자막 텍스트',
-        textSize: 36,
+        textSize: 44,
         textColor: '#ffffff',
         textOpacity: 100,
         textEffect: 'none',
@@ -2281,8 +2326,8 @@ function updateTimelineClipsUI() {
         let displayName = clip.name;
         if (clip.overlayType === 'text') displayName = clip.text || '자막 텍스트';
 
-        // 정지 이미지는 source in/out 개념이 없으므로 길이만 보여준다
-        const durationInfoHtml = clip.mediaType === 'image'
+        // 정지 이미지 및 오버레이(자막/스티커)는 source in/out 개념이 없으므로 길이만 보여준다
+        const durationInfoHtml = (clip.mediaType === 'image' || clip.track === 'overlay')
             ? `${clip.duration.toFixed(1)}s`
             : `${clip.duration.toFixed(1)}s [${clip.sourceStart.toFixed(1)}~${clip.sourceEnd.toFixed(1)}]`;
 
@@ -2379,6 +2424,18 @@ function selectClip(clipId) {
     DOM.propSourceStart.value = clip.sourceStart;
     DOM.propSourceEnd.value = clip.sourceEnd;
 
+    if (DOM.propDurationLabel) {
+        if (clip.track === 'overlay' && clip.overlayType === 'text') {
+            DOM.propDurationLabel.textContent = "자막 표시 시간 (초)";
+        } else if (clip.track === 'overlay' && clip.overlayType === 'image') {
+            DOM.propDurationLabel.textContent = "스티커 표시 시간 (초)";
+        } else if (clip.track === 'audio') {
+            DOM.propDurationLabel.textContent = "오디오 재생 시간 (초)";
+        } else {
+            DOM.propDurationLabel.textContent = "출력 지속 시간 (초)";
+        }
+    }
+
     // 섹션별 가시성 토글
     DOM.videoPropertiesSection.classList.add('hide');
     DOM.audioPropertiesSection.classList.add('hide');
@@ -2387,6 +2444,14 @@ function selectClip(clipId) {
     DOM.textOverlaySection.classList.add('hide');
     DOM.imageOverlaySection.classList.add('hide');
     if (DOM.chromakeyPropertiesSection) DOM.chromakeyPropertiesSection.classList.add('hide');
+
+    if (DOM.propCutRow) {
+        if (clip.track === 'overlay') {
+            DOM.propCutRow.classList.add('hide');
+        } else {
+            DOM.propCutRow.classList.remove('hide');
+        }
+    }
 
     if (clip.track === 'video1' || clip.track === 'video2') {
         DOM.propClipTitle.textContent = clip.track === 'video1' ? "메인 비디오 클립" : "PIP 비디오 클립";
@@ -2472,9 +2537,18 @@ function selectClip(clipId) {
             DOM.propTextEffect.value = clip.textEffect || 'none';
             DOM.propTextBgbox.value = clip.textBgbox || 'off';
             DOM.propTextWeight.value = clip.textWeight || 'normal';
-            DOM.propTextFont.value = clip.textFont || 'malgun';
+            
+            const fontVal = clip.textFont || 'malgun';
+            let opt = Array.from(DOM.propTextFont.options).find(o => o.value === fontVal);
+            if (!opt) {
+                opt = document.createElement('option');
+                opt.value = fontVal;
+                opt.textContent = `📁 ${fontVal}`;
+                DOM.propTextFont.appendChild(opt);
+            }
+            DOM.propTextFont.value = fontVal;
             DOM.propTextFontCustom.value = clip.textFontCustom || '';
-            if (clip.textFont === 'custom') {
+            if (fontVal === 'custom' || String(fontVal).startsWith('custom_')) {
                 DOM.propTextFontCustomGroup.classList.remove('hide');
             } else {
                 DOM.propTextFontCustomGroup.classList.add('hide');
@@ -2586,6 +2660,105 @@ function updateSelectedClipFromInputs(e) {
     const clip = STATE.clips.find(c => c.id === STATE.selectedClipId);
     if (!clip) return;
 
+    // ========================================================
+    // 1. 자막 (텍스트 오버레이) 클립 전용 처리 (간섭 없는 독립 수동 입력)
+    // ========================================================
+    if (clip.track === 'overlay' && clip.overlayType === 'text') {
+        // 1.1 타임라인 시작 시간
+        if (DOM.propTimelineStart) {
+            const tStart = parseFloat(DOM.propTimelineStart.value);
+            if (!isNaN(tStart) && tStart >= 0) {
+                clip.timelineStart = tStart;
+            }
+        }
+
+        // 1.2 자막 표시 시간 (초) - 1.5초 등 소수점 수동 입력 완벽 보장
+        if (DOM.propDuration) {
+            const durVal = parseFloat(DOM.propDuration.value);
+            if (!isNaN(durVal) && durVal > 0) {
+                clip.duration = durVal;
+                clip.sourceStart = 0;
+                clip.sourceEnd = durVal;
+            }
+            // 포커스를 벗어나거나 엔터를 칠 때(change 이벤트)만 최종 정돈 (타이핑 중 소수점 삭제 방지)
+            if (e && e.type === 'change' && e.target === DOM.propDuration && !isNaN(durVal) && durVal > 0) {
+                DOM.propDuration.value = clip.duration;
+            }
+        }
+
+        // 1.3 텍스트 속성 실시간 반영
+        if (DOM.propTextContent) clip.text = DOM.propTextContent.value;
+        if (DOM.propTextSize) clip.textSize = parseInt(DOM.propTextSize.value) || 36;
+        if (DOM.propTextColor) clip.textColor = DOM.propTextColor.value;
+        if (DOM.propTextOpacity) {
+            const op = parseInt(DOM.propTextOpacity.value);
+            clip.textOpacity = isNaN(op) ? 100 : op;
+            if (DOM.propTextOpacityLabel) DOM.propTextOpacityLabel.textContent = `${clip.textOpacity}%`;
+        }
+        if (DOM.propTextEffect) clip.textEffect = DOM.propTextEffect.value;
+        if (DOM.propTextBgbox) clip.textBgbox = DOM.propTextBgbox.value;
+        if (DOM.propTextWeight) clip.textWeight = DOM.propTextWeight.value;
+        if (DOM.propTextFont) {
+            clip.textFont = DOM.propTextFont.value;
+            try { localStorage.setItem('look_last_text_font', clip.textFont); } catch (err) {}
+        }
+        if (DOM.propTextFontCustom) {
+            clip.textFontCustom = DOM.propTextFontCustom.value;
+            try {
+                if (clip.textFontCustom) localStorage.setItem('look_last_text_font_custom', clip.textFontCustom);
+            } catch (err) {}
+        }
+        if (DOM.propTextX) clip.x = parseInt(DOM.propTextX.value) || 0;
+        if (DOM.propTextY) clip.y = parseInt(DOM.propTextY.value) || 0;
+
+        updateTimelineClipsUIOnlyPosition();
+        recalculateTotalDuration();
+        renderPreview();
+        return;
+    }
+
+    // ========================================================
+    // 2. 스티커 (이미지/비디오 오버레이) 클립 전용 처리
+    // ========================================================
+    if (clip.track === 'overlay') {
+        if (DOM.propTimelineStart) {
+            const tStart = parseFloat(DOM.propTimelineStart.value);
+            if (!isNaN(tStart) && tStart >= 0) clip.timelineStart = tStart;
+        }
+        if (DOM.propDuration) {
+            const durVal = parseFloat(DOM.propDuration.value);
+            if (!isNaN(durVal) && durVal > 0) {
+                clip.duration = durVal;
+                clip.sourceStart = 0;
+                clip.sourceEnd = durVal;
+            }
+            if (e && e.type === 'change' && e.target === DOM.propDuration && !isNaN(durVal) && durVal > 0) {
+                DOM.propDuration.value = clip.duration;
+            }
+        }
+        if (DOM.propImgWidth) clip.width = parseInt(DOM.propImgWidth.value) || 150;
+        if (DOM.propImgHeight) clip.height = parseInt(DOM.propImgHeight.value) || 150;
+        if (DOM.propTextX) clip.x = parseInt(DOM.propTextX.value) || 0;
+        if (DOM.propTextY) clip.y = parseInt(DOM.propTextY.value) || 0;
+
+        if (DOM.propChromakeyEnable) {
+            clip.chromakey = DOM.propChromakeyEnable.checked;
+            clip.chromakeyColor = (DOM.propChromakeyColor ? DOM.propChromakeyColor.value : (clip.chromakeyColor || '#00ff00')).toLowerCase();
+            const simVal = DOM.propChromakeySim ? parseInt(DOM.propChromakeySim.value) : 25;
+            clip.chromakeySimilarity = (isNaN(simVal) ? 25 : simVal) / 100;
+            const blendVal = DOM.propChromakeyBlend ? parseInt(DOM.propChromakeyBlend.value) : 10;
+            clip.chromakeyBlend = (isNaN(blendVal) ? 10 : blendVal) / 100;
+        }
+
+        updateTimelineClipsUIOnlyPosition();
+        recalculateTotalDuration();
+        renderPreview();
+        return;
+    }
+
+    // ========================================================
+    // 3. 비디오 (Video 1, Video 2) 및 오디오 클립 처리 (구간 컷 & 배속)
+    // ========================================================
     clip.localPath = DOM.propLocalPath.value;
     
     const speed = DOM.propSpeed ? (parseFloat(DOM.propSpeed.value) || 1.0) : 1.0;
@@ -2607,6 +2780,9 @@ function updateSelectedClipFromInputs(e) {
         clip.sourceEnd = Math.min(assetDuration, clip.sourceStart + duration * speed);
         clip.duration = parseFloat(((clip.sourceEnd - clip.sourceStart) / speed).toFixed(2));
         DOM.propSourceEnd.value = clip.sourceEnd;
+        if (e.type === 'change') {
+            DOM.propDuration.value = clip.duration;
+        }
     } else if (e && (e.target === DOM.propSourceStart || e.target === DOM.propSourceEnd)) {
         const sourceStart = parseFloat(DOM.propSourceStart.value) || 0;
         const sourceEnd = parseFloat(DOM.propSourceEnd.value) || 0.1;
@@ -2615,7 +2791,9 @@ function updateSelectedClipFromInputs(e) {
         clip.duration = parseFloat(((clip.sourceEnd - clip.sourceStart) / speed).toFixed(2));
         DOM.propSourceStart.value = clip.sourceStart;
         DOM.propSourceEnd.value = clip.sourceEnd;
-        DOM.propDuration.value = clip.duration;
+        if (e.type === 'change') {
+            DOM.propDuration.value = clip.duration;
+        }
     } else {
         const sourceStart = parseFloat(DOM.propSourceStart.value) || 0;
         const sourceEnd = parseFloat(DOM.propSourceEnd.value) || 0.1;
@@ -2651,36 +2829,10 @@ function updateSelectedClipFromInputs(e) {
     } else if (clip.track === 'audio') {
         clip.volume = parseFloat(DOM.propAudioVolume.value);
         DOM.propAudioVolumeLabel.textContent = Math.round(clip.volume * 100);
-    } else if (clip.track === 'overlay') {
-        clip.x = parseInt(DOM.propTextX.value) || 0;
-        clip.y = parseInt(DOM.propTextY.value) || 0;
-        
-        if (clip.overlayType === 'text') {
-            clip.text = DOM.propTextContent.value;
-            clip.textSize = parseInt(DOM.propTextSize.value) || 36;
-            clip.textColor = DOM.propTextColor.value;
-            clip.textOpacity = parseInt(DOM.propTextOpacity.value);
-            if (isNaN(clip.textOpacity)) clip.textOpacity = 100;
-            clip.textEffect = DOM.propTextEffect.value;
-            clip.textBgbox = DOM.propTextBgbox.value;
-            clip.textWeight = DOM.propTextWeight.value;
-            clip.textFont = DOM.propTextFont.value;
-            clip.textFontCustom = DOM.propTextFontCustom.value;
-            try {
-                localStorage.setItem('look_last_text_font', clip.textFont);
-                if (clip.textFontCustom) {
-                    localStorage.setItem('look_last_text_font_custom', clip.textFontCustom);
-                }
-            } catch (e) {}
-            if (DOM.propTextOpacityLabel) DOM.propTextOpacityLabel.textContent = `${clip.textOpacity}%`;
-        } else if (clip.overlayType === 'image' || clip.overlayType === 'video') {
-            clip.width = parseInt(DOM.propImgWidth.value) || (clip.overlayType === 'video' ? 480 : 150);
-            clip.height = parseInt(DOM.propImgHeight.value) || (clip.overlayType === 'video' ? 270 : 150);
-        }
     }
 
-    // 크로마키 속성 동기화 (Video Track 2 또는 Overlay Track)
-    if (DOM.propChromakeyEnable && (clip.track === 'video2' || clip.track === 'overlay')) {
+    // 크로마키 속성 동기화 (Video Track 2)
+    if (DOM.propChromakeyEnable && clip.track === 'video2') {
         const isEnabled = DOM.propChromakeyEnable.checked;
         const prevEnabled = !!clip.chromakey;
         clip.chromakey = isEnabled;
@@ -2716,7 +2868,10 @@ function updateTimelineClipsUIOnlyPosition() {
             const width = clip.duration * STATE.timelineZoom;
             el.style.left = `${left}px`;
             el.style.width = `${width}px`;
-            el.querySelector('.clip-duration-info').textContent = `${clip.duration.toFixed(1)}s [${clip.sourceStart.toFixed(1)}~${clip.sourceEnd.toFixed(1)}]`;
+            const durText = (clip.mediaType === 'image' || clip.track === 'overlay')
+                ? `${clip.duration.toFixed(1)}s`
+                : `${clip.duration.toFixed(1)}s [${clip.sourceStart.toFixed(1)}~${clip.sourceEnd.toFixed(1)}]`;
+            el.querySelector('.clip-duration-info').textContent = durText;
             if (clip.overlayType === 'text') {
                 el.querySelector('.clip-name').textContent = clip.text || '자막 텍스트';
             }
@@ -2994,6 +3149,21 @@ function clearTimeline() {
 // 실제 타임라인 클립들의 총 재생 길이 (초)
 function getProjectContentDuration() {
     if (!STATE.clips || STATE.clips.length === 0) return 0;
+    
+    // 메인 비디오(Video 1) 및 PIP(Video 2) 끝점 우선 계산
+    // 자막(Overlay)이나 BGM(Audio)이 비디오보다 길어져 불필요한 검은 화면이 수 분간 렌더링되는 것을 방지
+    const videoClips = STATE.clips.filter(c => c.track === 'video1' || c.track === 'video2');
+    if (videoClips.length > 0) {
+        let maxVideoEnd = 0;
+        videoClips.forEach(c => {
+            const end = c.timelineStart + c.duration;
+            if (end > maxVideoEnd) maxVideoEnd = end;
+        });
+        if (maxVideoEnd > 0) {
+            return parseFloat(maxVideoEnd.toFixed(2));
+        }
+    }
+
     let maxEnd = 0;
     STATE.clips.forEach(c => {
         const end = c.timelineStart + c.duration;
@@ -3690,8 +3860,17 @@ function initClipTrim(e, clip, handle) {
     const startSourceEnd = clip.sourceEnd;
     const speed = clip.speed || 1.0;
     
+    const isOverlayText = clip.track === 'overlay' && clip.overlayType === 'text';
+    const v1Clips = STATE.clips.filter(c => c.track === 'video1');
+    let maxV1End = 0;
+    v1Clips.forEach(c => {
+        const end = c.timelineStart + c.duration;
+        if (end > maxV1End) maxV1End = end;
+    });
+
     const asset = clip.assetId ? STATE.assets.find(a => a.id === clip.assetId) : null;
-    const assetDuration = asset ? asset.duration : 1000.0;
+    const defaultTextMaxDur = maxV1End > 0 ? Math.max(0.1, maxV1End - clip.timelineStart) : 600.0;
+    const assetDuration = asset ? asset.duration : (isOverlayText ? defaultTextMaxDur : 1000.0);
 
     function onMouseMove(moveE) {
         const deltaX = moveE.clientX - startX;
@@ -4242,8 +4421,8 @@ function renderPreview() {
         } else if (clip.overlayType === 'text') {
             const scale = canvasW / 1280;
             ctx.fillStyle = hexToRgba(clip.textColor || '#ffffff', clip.textOpacity);
-            const fontFamily = getCanvasFontFamily(clip.textFont);
-            const fontSize = Math.round((clip.textSize || 36) * scale);
+            const fontFamily = getCanvasFontFamily(clip.textFont, clip.textFontCustom);
+            const fontSize = Math.round((clip.textSize || 44) * scale);
             const fontWeight = clip.textWeight === 'bold' ? 700 : 500;
             ctx.font = `${fontWeight} ${fontSize}px ${fontFamily}`;
 
@@ -4457,19 +4636,167 @@ function drawVideoClip(clip, time, x, y, w, h, letterbox) {
     ctx.restore();
 }
 
-function getCanvasFontFamily(fontKey) {
+const loadedFontsCache = new Set();
+function ensureFontLoaded(family, url) {
+    if (loadedFontsCache.has(family)) return;
+    loadedFontsCache.add(family);
+    try {
+        const fontFace = new FontFace(family, `url(${url})`);
+        fontFace.load().then(loaded => {
+            document.fonts.add(loaded);
+            renderPreview();
+        }).catch(err => {
+            console.warn(`Font load failed: ${family}`, err);
+        });
+    } catch (e) {}
+}
+
+function getCanvasFontFamily(fontKey, fontCustom) {
     switch (fontKey) {
-        case 'malgun':
-            return "'Malgun Gothic', 'Noto Sans KR', sans-serif";
+        case 'hyhead':
+            ensureFontLoaded('HYHeadLine', '/api/font-file?name=H2HDRM.TTF');
+            return "'HYHeadLine', 'HY헤드라인M', 'H2HDRM', 'Malgun Gothic', sans-serif";
+        case 'hygothic':
+            ensureFontLoaded('HYGothic', '/api/font-file?name=H2GTRM.TTF');
+            return "'HYGothic', 'HY견고딕', 'H2GTRM', 'Malgun Gothic', sans-serif";
+        case 'notosans':
+            ensureFontLoaded('NotoSansKR', '/api/font-file?name=NotoSansKR-VF.ttf');
+            return "'NotoSansKR', 'Noto Sans KR', 'Malgun Gothic', sans-serif";
+        case 'notoserif':
+            ensureFontLoaded('NotoSerifKR', '/api/font-file?name=NotoSerifKR-VF.ttf');
+            return "'NotoSerifKR', 'Noto Serif KR', 'Batang', serif";
+        case 'hypost':
+            ensureFontLoaded('HYPost', '/api/font-file?name=H2PORM.TTF');
+            return "'HYPost', 'HY엽서M', 'Malgun Gothic', sans-serif";
+        case 'hygungsuh':
+            ensureFontLoaded('HYGungSuh', '/api/font-file?name=H2GSRB.TTF');
+            return "'HYGungSuh', 'HY궁서B', 'Batang', serif";
+        case 'hymyungjo':
+            ensureFontLoaded('HYMyeongJo', '/api/font-file?name=H2MJRE.TTF');
+            return "'HYMyeongJo', 'HY중명조', 'Batang', serif";
         case 'gulim':
             return "'Gulim', 'GulimChe', sans-serif";
         case 'batang':
             return "'Batang', 'BatangChe', serif";
+        case 'ngulim':
+            return "'NGulim', '새굴림', 'Gulim', sans-serif";
+        case 'malgunbd':
+            return "'Malgun Gothic Bold', 'Malgun Gothic', sans-serif";
         case 'arial':
-            return "'Arial', sans-serif";
+            return "'Arial', 'Malgun Gothic', sans-serif";
+        case 'malgun':
+            return "'Malgun Gothic', 'Noto Sans KR', sans-serif";
         default:
-            return "'Malgun Gothic', 'Noto Sans KR', 'Outfit', sans-serif";
+            if (fontKey && fontCustom) {
+                const safeName = 'CustFont_' + String(fontKey).replace(/[^a-zA-Z0-9_]/g, '');
+                ensureFontLoaded(safeName, `/api/font-file?path=${encodeURIComponent(fontCustom)}`);
+                return `'${safeName}', 'Malgun Gothic', sans-serif`;
+            }
+            return "'Malgun Gothic', 'Noto Sans KR', sans-serif";
     }
+}
+
+// --- Windows 시스템 폰트 탐색 모달 로직 ---
+let systemFontsCache = null;
+async function openSystemFontModal() {
+    if (!DOM.sysFontModal) return;
+    DOM.sysFontModal.classList.remove('hide');
+    if (!systemFontsCache) {
+        await loadSystemFonts();
+    } else {
+        renderSystemFontList(systemFontsCache, DOM.sysFontSearchInput ? DOM.sysFontSearchInput.value : '');
+    }
+    if (DOM.sysFontSearchInput) {
+        DOM.sysFontSearchInput.focus();
+    }
+}
+
+async function loadSystemFonts() {
+    if (!DOM.sysFontList) return;
+    DOM.sysFontList.innerHTML = '<div style="color: var(--text-muted); padding: 20px; text-align: center; grid-column: 1 / -1;"><i class="fa-solid fa-spinner fa-spin"></i> Windows 시스템 폰트 검색 중...</div>';
+    try {
+        const res = await fetch('/api/system-fonts');
+        const data = await res.json();
+        if (data.success && Array.isArray(data.fonts)) {
+            systemFontsCache = data.fonts;
+            renderSystemFontList(systemFontsCache, DOM.sysFontSearchInput ? DOM.sysFontSearchInput.value : '');
+        } else {
+            DOM.sysFontList.innerHTML = '<div style="color: var(--text-muted); padding: 20px; text-align: center; grid-column: 1 / -1;">폰트 목록을 가져올 수 없습니다.</div>';
+        }
+    } catch (err) {
+        DOM.sysFontList.innerHTML = `<div style="color: var(--text-danger); padding: 20px; text-align: center; grid-column: 1 / -1;">오류: ${escapeHtml(err.message)}</div>`;
+    }
+}
+
+function renderSystemFontList(fonts, filterText = '') {
+    const list = DOM.sysFontList;
+    if (!list) return;
+    list.innerHTML = '';
+    const q = (filterText || '').trim().toLowerCase();
+    const filtered = fonts.filter(f => !q || (f.label && f.label.toLowerCase().includes(q)) || (f.file && f.file.toLowerCase().includes(q)));
+
+    if (filtered.length === 0) {
+        list.innerHTML = '<div style="color: var(--text-muted); padding: 20px; text-align: center; grid-column: 1 / -1;">검색된 글꼴이 없습니다.</div>';
+        return;
+    }
+
+    filtered.slice(0, 120).forEach(f => {
+        const item = document.createElement('div');
+        item.style.cssText = 'background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.08); border-radius: 6px; padding: 10px 12px; cursor: pointer; transition: all 0.15s ease; display: flex; flex-direction: column; gap: 4px;';
+        
+        const previewFamily = 'Prev_' + String(f.key).replace(/[^a-zA-Z0-9_]/g, '');
+        ensureFontLoaded(previewFamily, `/api/font-file?path=${encodeURIComponent(f.fullPath)}`);
+        
+        item.innerHTML = `
+            <div style="font-weight: 600; font-size: 0.95rem; color: var(--text);">${escapeHtml(f.label)}</div>
+            <div style="font-size: 0.75rem; color: var(--text-muted);">${escapeHtml(f.file)}</div>
+            <div style="font-size: 1rem; color: var(--accent); margin-top: 4px; font-family: '${previewFamily}', sans-serif; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">동해물과 백두산이 ABC 123</div>
+        `;
+        item.addEventListener('mouseenter', () => {
+            item.style.background = 'rgba(245, 197, 24, 0.1)';
+            item.style.borderColor = 'rgba(245, 197, 24, 0.45)';
+        });
+        item.addEventListener('mouseleave', () => {
+            item.style.background = 'rgba(255,255,255,0.04)';
+            item.style.borderColor = 'rgba(255,255,255,0.08)';
+        });
+        item.addEventListener('click', () => {
+            applyFontFromModal(f);
+            if (DOM.sysFontModal) DOM.sysFontModal.classList.add('hide');
+        });
+        list.appendChild(item);
+    });
+}
+
+function applyFontFromModal(fontObj) {
+    if (!STATE.selectedClipId) return;
+    const clip = STATE.clips.find(c => c.id === STATE.selectedClipId);
+    if (!clip || clip.overlayType !== 'text') return;
+
+    let opt = Array.from(DOM.propTextFont.options).find(o => o.value === fontObj.key);
+    if (!opt) {
+        opt = document.createElement('option');
+        opt.value = fontObj.key;
+        opt.textContent = `📁 ${fontObj.label}`;
+        DOM.propTextFont.appendChild(opt);
+    }
+    DOM.propTextFont.value = fontObj.key;
+    clip.textFont = fontObj.key;
+    clip.textFontCustom = fontObj.fullPath;
+    if (DOM.propTextFontCustom) DOM.propTextFontCustom.value = fontObj.fullPath;
+
+    if (fontObj.key === 'custom' || String(fontObj.key).startsWith('custom_')) {
+        DOM.propTextFontCustomGroup.classList.remove('hide');
+    } else {
+        DOM.propTextFontCustomGroup.classList.add('hide');
+    }
+
+    try {
+        localStorage.setItem('look_last_text_font', clip.textFont);
+        if (clip.textFontCustom) localStorage.setItem('look_last_text_font_custom', clip.textFontCustom);
+    } catch (e) {}
+
+    renderPreview();
 }
 
 // --- 프리뷰 확대/축소(휠) 및 화면 이동(드래그) ---

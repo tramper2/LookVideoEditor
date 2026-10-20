@@ -108,12 +108,26 @@ function generateFFmpegCommand(projectState) {
         };
     }
 
-    // 프로젝트 전체 실제 재생 길이 계산 (가장 늦게 끝나는 클립의 종료 시점)
-    let projectDuration = 0;
-    clips.forEach(c => {
+    // 프로젝트 전체 실제 재생 길이 계산
+    // 메인 비디오 트랙(Video 1) 또는 PIP(Video 2)가 존재하면 비디오 종료 시점을 기준으로 제한하여
+    // 자막(Overlay)이나 BGM(Audio)이 실수로 비디오보다 길어져 뒤쪽에 검은 화면이 수 분간 렌더링되는 현상을 방지
+    let maxVideoEnd = 0;
+    video1Clips.forEach(c => {
         const end = c.timelineStart + c.duration;
-        if (end > projectDuration) projectDuration = end;
+        if (end > maxVideoEnd) maxVideoEnd = end;
     });
+    video2Clips.forEach(c => {
+        const end = c.timelineStart + c.duration;
+        if (end > maxVideoEnd) maxVideoEnd = end;
+    });
+
+    let projectDuration = maxVideoEnd > 0 ? maxVideoEnd : 0;
+    if (projectDuration <= 0) {
+        clips.forEach(c => {
+            const end = c.timelineStart + c.duration;
+            if (end > projectDuration) projectDuration = end;
+        });
+    }
     projectDuration = Math.max(0.1, parseFloat(projectDuration.toFixed(2)));
 
     let inputs = [];
@@ -532,13 +546,13 @@ function generateFFmpegCommand(projectState) {
     // 5. Overlay 텍스트 (자막) drawtext 필터 적용
     const textClips = overlayClips.filter(c => c.overlayType === 'text');
     textClips.forEach((clip, i) => {
-        const endTimeline = clip.timelineStart + clip.duration;
+        const endTimeline = Math.min(projectDuration, clip.timelineStart + clip.duration);
         const scale = outW / 1280;
-        const fontSize = Math.round((clip.textSize || 36) * scale);
+        const fontSize = Math.round((clip.textSize || 44) * scale);
         const fontColor = clip.textColor || "#ffffff";
         const opacityVal = (clip.textOpacity !== undefined ? clip.textOpacity : 100) / 100;
         const fontColorWithAlpha = `${fontColor}@${opacityVal.toFixed(2)}`;
-        const fontPath = getFFmpegFontPath(clip.textFont || 'malgun', clip.textFontCustom, clip.textWeight === 'bold');
+        const fontPath = getFFmpegFontPath(clip.textFont || 'malgun', clip.textFontCustom, clip.textWeight === 'bold', clip.text);
 
         // 문자 효과 (외곽선 / 그림자)
         let textEffectOpts = '';
@@ -554,8 +568,10 @@ function generateFFmpegCommand(projectState) {
         // 배경 상자: 명시적으로 'on'일 때만 적용 (기본값은 off)
         const boxOpts = clip.textBgbox === 'on' ? ':box=1:boxcolor=black@0.4' : '';
 
-        const textXExpr = clip.x === 640 ? "(w-text_w)/2" : `${Math.round(clip.x * (outW / 1280))}`;
-        const baseY = Math.round(clip.y * (outH / 720));
+        const clipX = (clip.x !== undefined && clip.x !== null) ? clip.x : 640;
+        const clipY = (clip.y !== undefined && clip.y !== null) ? clip.y : 600;
+        const textXExpr = clipX === 640 ? "(w-text_w)/2" : `${Math.round(clipX * (outW / 1280))}`;
+        const baseY = Math.round(clipY * (outH / 720));
 
         // 여러 줄 처리: 줄마다 drawtext 를 따로 건다.
         //  text='...' 안에 진짜 개행문자를 넣으면 drawtext 가 줄바꿈은 하되
@@ -570,18 +586,21 @@ function generateFFmpegCommand(projectState) {
         lines.forEach((line, li) => {
             if (line.length === 0) return;   // 빈 줄은 자리만 차지한다 (필터를 만들지 않음)
 
-            // 特수문자 escape
-            const textEscaped = line
-                .replace(/\\/g, '\\\\')
-                .replace(/'/g, "\\'")
-                .replace(/:/g, '\\:')
-                .replace(/%/g, '\\%');
+            // 特수문자 escape (FFmpeg drawtext 규격)
+            // 1) 백슬래시 이스케이프
+            let textEscaped = line.replace(/\\/g, '\\\\');
+            // 2) 작은따옴표: text='...' 내부에서 따옴표를 닫고 이스케이프된 따옴표를 넣고 다시 염
+            textEscaped = textEscaped.replace(/'/g, "'\\''");
+            // 3) 콜론(:) 이스케이프 (필터 옵션 구분자 충돌 방지)
+            textEscaped = textEscaped.replace(/:/g, '\\:');
+            // 4) 퍼센트(%) 이스케이프 (strftime 확장 방지)
+            textEscaped = textEscaped.replace(/%/g, '\\%');
 
-            // 첫 줄 위치는 예전과 동일하게 두고, 여러 줄이면 그 점을 기준으로 위아래로 펼친다
-            const textYExpr = `${Math.round(baseY + (li - (lineCount - 1) / 2) * lineHeight)}`;
+            // 캔버스 프리뷰(textBaseline='middle')와 FFmpeg(top) 기준선 일치를 위해 fontSize * 0.45 오프셋 보정
+            const textYExpr = `${Math.round(baseY + (li - (lineCount - 1) / 2) * lineHeight - fontSize * 0.45)}`;
 
             const nextVideoNode = `v_text_overlay_${i}_${li}`;
-            filterComplex.push(`[${textNode}]drawtext=text='${textEscaped}':x=${textXExpr}:y=${textYExpr}:fontsize=${fontSize}:fontcolor=${fontColorWithAlpha}${textEffectOpts}${boxOpts}:fontfile='${fontPath}':enable='between(t,${clip.timelineStart.toFixed(2)},${endTimeline.toFixed(2)})'[${nextVideoNode}]`);
+            filterComplex.push(`[${textNode}]drawtext=text='${textEscaped}':x=${textXExpr}:y=${textYExpr}:fontsize=${fontSize}:fontcolor=${fontColorWithAlpha}${textEffectOpts}${boxOpts}:expansion=none:fontfile='${fontPath}':enable='between(t,${clip.timelineStart.toFixed(2)},${endTimeline.toFixed(2)})'[${nextVideoNode}]`);
             textNode = nextVideoNode;
         });
         currentVideoNode = textNode;
@@ -735,8 +754,12 @@ function formatDateForFilename(date) {
 /**
  * 선택된 글꼴 키에 부합하는 Windows 로컬 FFMPEG 용 폰트 절대경로 반환
  */
-function getFFmpegFontPath(textFont, textFontCustom, isBold) {
-    if (textFont === 'custom' && textFontCustom) {
+function getFFmpegFontPath(textFont, textFontCustom, isBold, textContent) {
+    // 한글 포함 여부 체크 (한글이 포함되어 있는데 영문 전용 폰트인 경우 맑은 고딕으로 안전 폴백)
+    const hasKorean = textContent && /[ㄱ-ㅎㅏ-ㅣ가-힣]/.test(textContent);
+
+    // custom 또는 직접 입력 경로 처리
+    if ((textFont === 'custom' || String(textFont).startsWith('custom_')) && textFontCustom) {
         let path = textFontCustom.replace(/\\/g, '/');
         if (path.substring(1, 3) === ':/') {
             path = path.charAt(0) + '\\:' + path.substring(2);
@@ -744,26 +767,64 @@ function getFFmpegFontPath(textFont, textFontCustom, isBold) {
         return path;
     }
 
-    // 굵게: 폰트별 Bold 파일 사용 (drawtext는 fontweight 미지원 빌드가 있어 fontfile 교체 방식)
+    // 굵게 옵션 적용 시
     if (isBold) {
         switch (textFont) {
             case 'arial':
+                if (hasKorean) return 'C\\:/Windows/Fonts/malgunbd.ttf';
                 return 'C\\:/Windows/Fonts/arialbd.ttf';
+            case 'hyhead':
+                return 'C\\:/Windows/Fonts/H2HDRM.TTF';
+            case 'hygothic':
+                return 'C\\:/Windows/Fonts/H2GTRM.TTF';
+            case 'notosans':
+                return 'C\\:/Windows/Fonts/NotoSansKR-VF.ttf';
+            case 'notoserif':
+                return 'C\\:/Windows/Fonts/NotoSerifKR-VF.ttf';
+            case 'hypost':
+                return 'C\\:/Windows/Fonts/H2PORM.TTF';
+            case 'hygungsuh':
+                return 'C\\:/Windows/Fonts/H2GSRB.TTF';
+            case 'hymyungjo':
+                return 'C\\:/Windows/Fonts/H2MJRE.TTF';
+            case 'ngulim':
+                return 'C\\:/Windows/Fonts/NGULIM.TTF';
             case 'gulim':
             case 'batang':
             case 'malgun':
+            case 'malgunbd':
             default:
-                // 굵은 변형이 없는 폰트는 맑은 고딕 Bold로 폴백
                 return 'C\\:/Windows/Fonts/malgunbd.ttf';
         }
     }
 
+    // 일반(Normal) 폰트 매핑
     switch (textFont) {
+        case 'hyhead':
+            return 'C\\:/Windows/Fonts/H2HDRM.TTF';
+        case 'hygothic':
+            return 'C\\:/Windows/Fonts/H2GTRM.TTF';
+        case 'notosans':
+            return 'C\\:/Windows/Fonts/NotoSansKR-VF.ttf';
+        case 'notoserif':
+            return 'C\\:/Windows/Fonts/NotoSerifKR-VF.ttf';
+        case 'hypost':
+            return 'C\\:/Windows/Fonts/H2PORM.TTF';
+        case 'hygungsuh':
+            return 'C\\:/Windows/Fonts/H2GSRB.TTF';
+        case 'hymyungjo':
+            return 'C\\:/Windows/Fonts/H2MJRE.TTF';
         case 'gulim':
             return 'C\\:/Windows/Fonts/gulim.ttc';
         case 'batang':
             return 'C\\:/Windows/Fonts/batang.ttc';
+        case 'ngulim':
+            return 'C\\:/Windows/Fonts/NGULIM.TTF';
+        case 'malgunbd':
+            return 'C\\:/Windows/Fonts/malgunbd.ttf';
         case 'arial':
+            // 한글이 있으면 Arial에서 글자가 공백으로 증발하므로 맑은 고딕으로 폴백
+            if (hasKorean) return 'C\\:/Windows/Fonts/malgun.ttf';
             return 'C\\:/Windows/Fonts/arial.ttf';
         case 'malgun':
         default:

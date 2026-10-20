@@ -305,13 +305,13 @@
                                 <input type="number" id="prop-timeline-start" step="0.001" min="0">
                             </div>
                             <div class="property-group">
-                                <label>출력 지속 시간 (초)</label>
+                                <label id="prop-duration-label">출력 지속 시간 (초)</label>
                                 <input type="number" id="prop-duration" step="0.001" min="0.01">
                             </div>
                         </div>
 
-                        <!-- 원본 파일 내 트리밍 구간 (Cut) -->
-                        <div class="property-row inline-split">
+                        <!-- 원본 파일 내 트리밍 구간 (Cut: 비디오/오디오 전용) -->
+                        <div class="property-row inline-split" id="prop-cut-row">
                             <div class="property-group">
                                 <label>원본 컷 시작 (초)</label>
                                 <input type="number" id="prop-source-start" step="0.1" min="0">
@@ -439,13 +439,34 @@
                                 </div>
                                 <div class="property-row">
                                     <div class="property-group">
-                                        <label>자막 글꼴</label>
+                                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
+                                            <label style="margin: 0;">자막 글꼴</label>
+                                            <button type="button" id="btn-browse-sys-fonts" class="btn btn-xs btn-outline" style="font-size: 11px; padding: 2px 6px;" title="Windows 시스템 폰트 목록에서 가져오기">
+                                                <i class="fa-solid fa-font"></i> Windows 폰트 탐색
+                                            </button>
+                                        </div>
                                         <select id="prop-text-font">
-                                            <option value="malgun" selected>맑은 고딕 (Malgun)</option>
-                                            <option value="gulim">굴림 (Gulim)</option>
-                                            <option value="batang">바탕 (Batang)</option>
-                                            <option value="arial">Arial (영문 전용)</option>
-                                            <option value="custom">직접 입력 (로컬 경로)</option>
+                                            <optgroup label="👑 한글 추천 (굵고 또렷한 자막)">
+                                                <option value="hyhead">HY헤드라인M (굵은 자막 추천)</option>
+                                                <option value="hygothic">HY견고딕 (묵직한 고딕 추천)</option>
+                                                <option value="malgun" selected>맑은 고딕 (Malgun Gothic)</option>
+                                                <option value="notosans">본고딕 (Noto Sans KR)</option>
+                                            </optgroup>
+                                            <optgroup label="✒️ 감성 & 명조 & 손글씨">
+                                                <option value="notoserif">본명조 (Noto Serif KR)</option>
+                                                <option value="hypost">HY엽서M (손글씨 느낌)</option>
+                                                <option value="hygungsuh">HY궁서B (정통 붓글씨)</option>
+                                                <option value="hymyungjo">HY중명조 (클래식 명조)</option>
+                                                <option value="batang">바탕 / 명조 (Batang)</option>
+                                            </optgroup>
+                                            <optgroup label="📄 기본 고딕 & 영문">
+                                                <option value="gulim">굴림 / 돋움 (Gulim)</option>
+                                                <option value="ngulim">새굴림 (NGulim)</option>
+                                                <option value="arial">Arial (영문 전용)</option>
+                                            </optgroup>
+                                            <optgroup label="⚙️ 기타">
+                                                <option value="custom">직접 입력 (로컬 파일 경로)</option>
+                                            </optgroup>
                                         </select>
                                     </div>
                                 </div>
@@ -456,7 +477,7 @@
                                 <div class="property-row">
                                     <div class="property-group">
                                         <label>글꼴 크기 (px)</label>
-                                        <input type="number" id="prop-text-size" min="12" max="120" value="36">
+                                        <input type="number" id="prop-text-size" min="12" max="200" value="44">
                                     </div>
                                     <div class="property-group">
                                         <label>글자 색상</label>
@@ -1010,6 +1031,31 @@
             </div>
             <div class="modal-footer">
                 <button id="btn-close-music-modal-footer" class="btn btn-secondary">닫기</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Windows 시스템 폰트 탐색 및 선택 모달 -->
+    <div id="sys-font-modal" class="modal-backdrop hide">
+        <div class="modal-card" style="max-width: 650px; max-height: 85vh; display: flex; flex-direction: column;">
+            <div class="modal-header">
+                <h3><i class="fa-solid fa-font"></i> Windows 시스템 폰트 선택</h3>
+                <button class="modal-close" id="btn-close-sys-font-modal">✕</button>
+            </div>
+            <div class="modal-body" style="padding: 16px 20px; overflow-y: auto; flex: 1;">
+                <p style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 12px;">
+                    PC의 <code>C:\Windows\Fonts</code> 및 설치된 글꼴 중 원하는 폰트를 검색하여 클릭하면 자막 글꼴로 즉시 적용됩니다.
+                </p>
+                <div style="margin-bottom: 12px; display: flex; gap: 8px;">
+                    <input type="text" id="sys-font-search-input" class="text-input" placeholder="글꼴 이름 검색 (예: 나눔, Gmarket, HY, Noto, Gothic...)" style="flex: 1; padding: 8px 12px; font-size: 0.9rem;">
+                    <button type="button" id="btn-refresh-sys-fonts" class="btn btn-sm btn-secondary" title="폰트 목록 새로고침"><i class="fa-solid fa-arrows-rotate"></i></button>
+                </div>
+                <div id="sys-font-list" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 8px; max-height: 400px; overflow-y: auto; padding-right: 4px;">
+                    <div style="color: var(--text-muted); padding: 20px; text-align: center; grid-column: 1 / -1;">폰트 목록을 불러오는 중...</div>
+                </div>
+            </div>
+            <div class="modal-footer" style="padding: 12px 20px;">
+                <button id="btn-cancel-sys-font-modal" class="btn btn-secondary">닫기</button>
             </div>
         </div>
     </div>
