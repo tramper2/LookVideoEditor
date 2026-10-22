@@ -1695,7 +1695,8 @@ function addReelToEditor(reel) {
             duration: 5.0,
             url: reel.url,
             file: null,          // file:null → 서버 업로드 자동 스킵 (localPath 그대로 FFmpeg 입력)
-            localPath: reel.source
+            localPath: reel.source,
+            hasAudio: reel.hasAudio
         };
         STATE.assets.push(asset);
     } else if (!asset.url) {
@@ -2170,7 +2171,9 @@ function addAssetToTimeline(assetId, trackType, timelineStart) {
         rotation: 0,
         volume: 1.0,
         speed: 1.0,
-        effects: []
+        effects: [],
+        hasAudio: asset.hasAudio,
+        muteAudio: asset.hasAudio === false ? true : false
     };
 
     if (trackType === 'video2') {
@@ -2457,7 +2460,16 @@ function selectClip(clipId) {
         DOM.propClipTitle.textContent = clip.track === 'video1' ? "메인 비디오 클립" : "PIP 비디오 클립";
         DOM.videoPropertiesSection.classList.remove('hide');
         if (DOM.propVideoMuteAudio) {
-            DOM.propVideoMuteAudio.checked = clip.muteAudio === true;
+            const labelSpan = DOM.propVideoMuteAudio.parentElement ? DOM.propVideoMuteAudio.parentElement.querySelector('span') : null;
+            if (clip.hasAudio === false) {
+                DOM.propVideoMuteAudio.checked = true;
+                DOM.propVideoMuteAudio.disabled = true;
+                if (labelSpan) labelSpan.innerHTML = '<strong>오디오 음소거 (무음 영상 / 오디오 없음)</strong>';
+            } else {
+                DOM.propVideoMuteAudio.checked = clip.muteAudio === true;
+                DOM.propVideoMuteAudio.disabled = false;
+                if (labelSpan) labelSpan.innerHTML = '<strong>오디오 음소거 (영상만 사용)</strong>';
+            }
         }
         DOM.propRotation.value = clip.rotation || 0;
         DOM.propVolume.value = clip.volume !== undefined ? clip.volume : 1.0;
@@ -2966,8 +2978,8 @@ async function separateAudioFromSelectedClip() {
         return;
     }
 
-    if (clip.mediaType === 'image') {
-        alert("정지 이미지 클립에는 오디오가 없습니다.");
+    if (clip.mediaType === 'image' || clip.hasAudio === false) {
+        alert("이 동영상 파일에는 오디오 트랙이 존재하지 않아 소리를 분리할 수 없습니다.");
         return;
     }
 
@@ -5086,10 +5098,17 @@ async function uploadAssetFileToServer(asset) {
             const data = await res.json();
             if (data.localPath) {
                 asset.localPath = data.localPath;
+                if (data.hasAudio !== undefined) {
+                    asset.hasAudio = data.hasAudio;
+                    STATE.clips.filter(c => c.assetId === asset.id).forEach(c => {
+                        c.hasAudio = data.hasAudio;
+                        if (data.hasAudio === false) c.muteAudio = true;
+                    });
+                }
                 STATE.clips.filter(c => c.assetId === asset.id).forEach(c => {
                     c.localPath = data.localPath;
                 });
-                console.log(`[LookVideoEditor] 소스 파일 서버 동기화 완료: ${asset.name} -> ${data.localPath}`);
+                console.log(`[LookVideoEditor] 소스 파일 서버 동기화 완료: ${asset.name} -> ${data.localPath} (hasAudio: ${data.hasAudio})`);
             }
         }
     } catch (e) {
@@ -5097,13 +5116,31 @@ async function uploadAssetFileToServer(asset) {
     }
 }
 
-// 모든 프로젝트 에셋이 로컬 서버의 source/ 폴더에 동기화되었는지 확인
+// 모든 프로젝트 에셋이 로컬 서버의 source/ 폴더에 동기화되었는지 확인 및 오디오 프로브
 async function ensureAssetsUploadedToLocalServer() {
     const isServer = await checkServerHealth();
     if (!isServer) return;
     for (const asset of STATE.assets) {
         if (asset.file) {
             await uploadAssetFileToServer(asset);
+        } else if (asset.type === 'video' && asset.hasAudio === undefined && asset.localPath) {
+            try {
+                const probeRes = await fetch('/api/probe', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ path: asset.localPath })
+                });
+                if (probeRes.ok) {
+                    const probeData = await probeRes.json();
+                    if (probeData.hasAudio !== undefined) {
+                        asset.hasAudio = probeData.hasAudio;
+                        STATE.clips.filter(c => c.assetId === asset.id).forEach(c => {
+                            c.hasAudio = probeData.hasAudio;
+                            if (probeData.hasAudio === false) c.muteAudio = true;
+                        });
+                    }
+                }
+            } catch (e) {}
         }
     }
 }
@@ -6089,7 +6126,10 @@ async function openRenderedVideoFile() {
 }
 
 async function openOutputFolder() {
+    const btn = DOM.btnOpenOutputFolder;
+    const origHtml = btn ? btn.innerHTML : '';
     try {
+        if (btn) btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> 탐색기 여는 중...';
         const res = await fetch('/api/open-output', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -6098,9 +6138,17 @@ async function openOutputFolder() {
         if (res.ok) {
             const data = await res.json();
             console.log("[LookVideoEditor] 탐색기 열기 완료:", data.path);
+            if (btn) {
+                btn.innerHTML = '<i class="fa-solid fa-check"></i> 저장 폴더 열림!';
+                setTimeout(() => { if (btn) btn.innerHTML = origHtml; }, 2500);
+            }
+        } else {
+            throw new Error(`서버 응답 코드: ${res.status}`);
         }
     } catch (e) {
         console.error("Open output folder error:", e);
+        if (btn) btn.innerHTML = origHtml;
+        alert(`저장 폴더를 여는 중 문제가 발생했습니다: ${e.message}\n우측 [비디오 다운로드] 버튼으로 결과 파일을 즉시 브라우저로 내려받으실 수도 있습니다.`);
     }
 }
 

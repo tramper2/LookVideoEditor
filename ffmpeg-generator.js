@@ -330,9 +330,9 @@ function generateFFmpegCommand(projectState) {
         const aProcessed = `a1_delayed_${inputIdx}`;
         
         filterComplex.push(`[${inputIdx}:v]${vFilters.join(",")}[${vProcessed}]`);
-        // 정지 이미지 입력 또는 음소거(영상 전용) 클립은 오디오 스트림을 믹싱하지 않는다
-        const isMuted = clip.muteAudio === true || (clip.volume !== undefined && clip.volume <= 0.001);
-        if (!isStill && !isMuted) {
+        // 정지 이미지 입력, 오디오 스트림이 없는 비디오 또는 음소거(영상 전용) 클립은 오디오 스트림을 믹싱하지 않는다
+        const hasNoAudio = isStill || clip.hasAudio === false || clip.muteAudio === true || (clip.volume !== undefined && clip.volume <= 0.001);
+        if (!hasNoAudio) {
             filterComplex.push(`[${inputIdx}:a]${aFilters.join(",")}[${aProcessed}]`);
         }
 
@@ -343,7 +343,7 @@ function generateFFmpegCommand(projectState) {
         currentVideoNode = nextVideoNode;
 
         // 정지 이미지 및 음소거된 비디오는 소리가 없으므로 amix 입력에 넣지 않는다
-        if (!isStill && !isMuted) {
+        if (!hasNoAudio) {
             audioMixInputs.push(`[${aProcessed}]`);
         }
     });
@@ -424,12 +424,12 @@ function generateFFmpegCommand(projectState) {
             aFilters.push(`adelay=${delayMs}|${delayMs}`);
         }
         
-        const isMuted = clip.muteAudio === true || (clip.volume !== undefined && clip.volume <= 0.001);
+        const hasNoAudio = clip.hasAudio === false || clip.muteAudio === true || (clip.volume !== undefined && clip.volume <= 0.001);
         const vProcessed = `v2_processed_${inputIdx}`;
         const aDelayed = `a2_delayed_${inputIdx}`;
         
         filterComplex.push(`[${inputIdx}:v]${vFilters.join(",")}[${vProcessed}]`);
-        if (!isMuted) {
+        if (!hasNoAudio) {
             filterComplex.push(`[${inputIdx}:a]${aFilters.join(",")}[${aDelayed}]`);
         }
         
@@ -439,7 +439,7 @@ function generateFFmpegCommand(projectState) {
         filterComplex.push(`[${currentVideoNode}][${vProcessed}]overlay=x=${pipX}:y=${pipY}:enable='between(t,${clip.timelineStart.toFixed(2)},${endTimeline.toFixed(2)})'[${nextVideoNode}]`);
         currentVideoNode = nextVideoNode;
         
-        if (!isMuted) {
+        if (!hasNoAudio) {
             audioMixInputs.push(`[${aDelayed}]`);
         }
     });

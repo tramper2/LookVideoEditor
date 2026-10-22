@@ -287,6 +287,149 @@ function getFFmpegBinary() {
     return 'ffmpeg';
 }
 
+// 로컬 FFprobe 바이너리 탐색
+function getFFprobeBinary() {
+    const localFfprobe = path.join(ROOT_DIR, 'ffmpeg', 'ffprobe.exe');
+    if (fs.existsSync(localFfprobe)) {
+        return localFfprobe;
+    }
+    return 'ffprobe';
+}
+
+/**
+ * Windows 탐색기 열기 (파일 선택 하이라이트 또는 폴더 열기)
+ * cmd.exe /c start 를 사용하여 백그라운드 서버 프로세스에서도 사용자의 대화형 데스크톱에 즉시 표시
+ */
+function openExplorerPath(targetPath) {
+    if (!targetPath) return;
+    const resolved = path.resolve(targetPath);
+    const exists = fs.existsSync(resolved);
+    const isFile = exists && fs.statSync(resolved).isFile();
+    const folder = isFile ? path.dirname(resolved) : (exists ? resolved : path.resolve(ROOT_DIR, 'output'));
+
+    if (!fs.existsSync(folder)) {
+        try { fs.mkdirSync(folder, { recursive: true }); } catch (e) {}
+    }
+
+    console.log(`[LookVideoEditor] 탐색기 열기 실행: ${resolved} (isFile: ${isFile})`);
+
+    try {
+        if (isFile) {
+            // 파일을 선택(하이라이트)한 상태로 탐색기 창 열기
+            spawn('cmd.exe', ['/c', 'start', '""', 'explorer.exe', `/select,"${resolved}"`], {
+                windowsHide: true,
+                stdio: 'ignore'
+            });
+        } else {
+            // 폴더 열기
+            spawn('cmd.exe', ['/c', 'start', '""', `"${folder}"`], {
+                windowsHide: true,
+                stdio: 'ignore'
+            });
+        }
+    } catch (e) {
+        console.error('[LookVideoEditor] 탐색기 실행 에러:', e);
+    }
+}
+
+// 미디어 파일 오디오 스트림 유무 검사 (캐싱 지원)
+const audioProbeCache = new Map();
+
+function probeHasAudio(filePath) {
+    return new Promise((resolve) => {
+        if (!filePath || typeof filePath !== 'string') return resolve(false);
+        const resolved = path.resolve(ROOT_DIR, filePath);
+        if (!fs.existsSync(resolved)) return resolve(false);
+
+        const ext = path.extname(resolved).toLowerCase();
+        if (['.jpg', '.jpeg', '.png', '.webp', '.gif', '.bmp', '.svg'].includes(ext)) {
+            return resolve(false);
+        }
+        if (['.mp3', '.wav', '.m4a', '.aac', '.flac', '.ogg'].includes(ext)) {
+            return resolve(true);
+        }
+
+        let mtime = 0;
+        try { mtime = fs.statSync(resolved).mtimeMs; } catch (e) {}
+        const cacheKey = `${resolved}_${mtime}`;
+        if (audioProbeCache.has(cacheKey)) {
+            return resolve(audioProbeCache.get(cacheKey));
+        }
+
+        const ffprobe = getFFprobeBinary();
+        const args = ['-v', 'error', '-show_entries', 'stream=codec_type', '-of', 'csv=p=0', resolved];
+        const child = spawn(ffprobe, args, { windowsHide: true });
+        let out = '';
+        child.stdout.on('data', d => { out += d.toString('utf8'); });
+        child.on('close', code => {
+            if (code === 0) {
+                const hasAudio = out.toLowerCase().includes('audio');
+                audioProbeCache.set(cacheKey, hasAudio);
+                resolve(hasAudio);
+            } else {
+                const ffmpeg = getFFmpegBinary();
+                const child2 = spawn(ffmpeg, ['-i', resolved], { windowsHide: true });
+                let err = '';
+                child2.stderr.on('data', d => { err += d.toString('utf8'); });
+                child2.on('close', () => {
+                    const hasAudio = /Stream\s+#\d+:\d+.*Audio:/i.test(err);
+                    audioProbeCache.set(cacheKey, hasAudio);
+                    resolve(hasAudio);
+                });
+                child2.on('error', () => resolve(true));
+            }
+        });
+        child.on('error', () => {
+            const ffmpeg = getFFmpegBinary();
+            const child2 = spawn(ffmpeg, ['-i', resolved], { windowsHide: true });
+            let err = '';
+            child2.stderr.on('data', d => { err += d.toString('utf8'); });
+            child2.on('close', () => {
+                const hasAudio = /Stream\s+#\d+:\d+.*Audio:/i.test(err);
+                audioProbeCache.set(cacheKey, hasAudio);
+                resolve(hasAudio);
+            });
+            child2.on('error', () => resolve(true));
+        });
+    });
+}
+
+/**
+ * filterComplex 내에서 오디오 스트림이 없는 입력을 참조하는 [i:a] 필터를 자동 무음 소스로 치환
+ */
+async function sanitizeFilterComplex(rawInputs, filterComplex, totalDuration = 10) {
+    if (!Array.isArray(filterComplex) || !Array.isArray(rawInputs)) {
+        return filterComplex;
+    }
+
+    const safeDuration = (Number(totalDuration) || 10).toFixed(2);
+    let newFilterComplex = filterComplex.slice();
+    let prefixNodes = [];
+
+    for (let i = 0; i < rawInputs.length; i++) {
+        const inp = rawInputs[i];
+        if (!inp || !inp.path) continue;
+
+        const hasAudio = await probeHasAudio(inp.path);
+        if (!hasAudio) {
+            // [i:a] 패턴이 filterComplex 에 존재하는지 확인
+            const pattern = new RegExp(`\\[${i}:a\\]`, 'g');
+            const hasRef = newFilterComplex.some(line => pattern.test(line));
+            if (hasRef) {
+                const silentNode = `auto_silent_${i}`;
+                prefixNodes.push(`anullsrc=r=44100:cl=stereo:d=${safeDuration}[${silentNode}]`);
+                newFilterComplex = newFilterComplex.map(line => line.replace(pattern, `[${silentNode}]`));
+                console.log(`[LookVideoEditor] 오디오 없는 영상 [${i}:a] 자동 무음 소스 대체: ${inp.path}`);
+            }
+        }
+    }
+
+    if (prefixNodes.length > 0) {
+        newFilterComplex = [...prefixNodes, ...newFilterComplex];
+    }
+    return newFilterComplex;
+}
+
 function parseTimeToSeconds(timeStr) {
     if (!timeStr) return 0;
     const parts = timeStr.split(':');
@@ -815,7 +958,7 @@ const server = http.createServer(async (req, res) => {
 
         req.pipe(fileStream);
 
-        fileStream.on('finish', () => {
+        fileStream.on('finish', async () => {
             let size = 0;
             try {
                 size = fs.statSync(targetPath).size;
@@ -827,7 +970,8 @@ const server = http.createServer(async (req, res) => {
             else if (['.jpg', '.jpeg', '.png', '.webp', '.gif', '.bmp', '.svg'].includes(ext)) mediaType = 'image';
             else if (['.mp3', '.wav', '.m4a', '.aac', '.flac', '.ogg'].includes(ext)) mediaType = 'audio';
 
-            console.log(`[LookVideoEditor] 소스 파일 업로드 완료: ${targetPath} (${(size / 1024).toFixed(1)} KB, type: ${mediaType})`);
+            const hasAudio = (mediaType === 'video') ? await probeHasAudio(targetPath) : (mediaType === 'audio');
+            console.log(`[LookVideoEditor] 소스 파일 업로드 완료: ${targetPath} (${(size / 1024).toFixed(1)} KB, type: ${mediaType}, hasAudio: ${hasAudio})`);
             res.writeHead(200, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify({
                 success: true,
@@ -835,7 +979,8 @@ const server = http.createServer(async (req, res) => {
                 filename: filename,
                 url: `/source/${encodeURIComponent(filename)}`,
                 size: size,
-                type: mediaType
+                type: mediaType,
+                hasAudio: hasAudio
             }));
         });
 
@@ -857,32 +1002,35 @@ const server = http.createServer(async (req, res) => {
         }
 
         try {
-            const files = fs.readdirSync(sourceDir)
-                .map(f => {
-                    const fp = path.join(sourceDir, f);
-                    try {
-                        const stat = fs.statSync(fp);
-                        if (!stat.isFile()) return null;
-                        const ext = path.extname(f).toLowerCase();
-                        let type = 'unknown';
-                        if (VIDEO_EXTS.has(ext)) type = 'video';
-                        else if (['.jpg', '.jpeg', '.png', '.webp', '.gif', '.bmp'].includes(ext)) type = 'image';
-                        else if (['.mp3', '.wav', '.m4a', '.aac', '.flac'].includes(ext)) type = 'audio';
+            const rawFiles = fs.readdirSync(sourceDir);
+            const files = (await Promise.all(rawFiles.map(async f => {
+                const fp = path.join(sourceDir, f);
+                try {
+                    const stat = fs.statSync(fp);
+                    if (!stat.isFile()) return null;
+                    const ext = path.extname(f).toLowerCase();
+                    let type = 'unknown';
+                    if (VIDEO_EXTS.has(ext)) type = 'video';
+                    else if (['.jpg', '.jpeg', '.png', '.webp', '.gif', '.bmp'].includes(ext)) type = 'image';
+                    else if (['.mp3', '.wav', '.m4a', '.aac', '.flac'].includes(ext)) type = 'audio';
 
-                        return {
-                            name: f,
-                            localPath: fp,
-                            url: `/source/${encodeURIComponent(f)}`,
-                            size: stat.size,
-                            type: type,
-                            mtime: stat.mtimeMs
-                        };
-                    } catch (e) {
-                        return null;
-                    }
-                })
-                .filter(Boolean)
-                .sort((a, b) => b.mtime - a.mtime);
+                    const hasAudio = (type === 'video') ? await probeHasAudio(fp) : (type === 'audio');
+
+                    return {
+                        name: f,
+                        localPath: fp,
+                        url: `/source/${encodeURIComponent(f)}`,
+                        size: stat.size,
+                        type: type,
+                        hasAudio: hasAudio,
+                        mtime: stat.mtimeMs
+                    };
+                } catch (e) {
+                    return null;
+                }
+            })))
+            .filter(Boolean)
+            .sort((a, b) => b.mtime - a.mtime);
 
             res.writeHead(200, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify({ success: true, files }));
@@ -916,6 +1064,30 @@ const server = http.createServer(async (req, res) => {
             } catch (e) {
                 res.writeHead(500, { 'Content-Type': 'application/json' });
                 res.end(JSON.stringify({ success: false, error: e.message }));
+            }
+        });
+        return;
+    }
+
+    // 3-0-2. 미디어 파일 프로브 (/api/probe)
+    if (pathname === '/api/probe' && req.method === 'POST') {
+        let body = '';
+        req.on('data', chunk => { body += chunk; });
+        req.on('end', async () => {
+            try {
+                const data = JSON.parse(body || '{}');
+                const filePath = data.path || data.filePath || (data.filename ? path.join(ROOT_DIR, 'source', data.filename) : null);
+                if (!filePath) {
+                    res.writeHead(400, { 'Content-Type': 'application/json' });
+                    res.end(JSON.stringify({ success: false, error: '경로가 누락되었습니다.' }));
+                    return;
+                }
+                const hasAudio = await probeHasAudio(filePath);
+                res.writeHead(200, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ success: true, path: filePath, hasAudio }));
+            } catch (err) {
+                res.writeHead(500, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ success: false, error: err.message }));
             }
         });
         return;
@@ -996,7 +1168,7 @@ const server = http.createServer(async (req, res) => {
 
         let body = '';
         req.on('data', chunk => { body += chunk; });
-        req.on('end', () => {
+        req.on('end', async () => {
             try {
                 const data = JSON.parse(body);
                 const { command, outputFile, totalDuration, fps, rawInputs, filterComplex, mappedVideo, mappedAudio, encoder } = data;
@@ -1056,7 +1228,9 @@ const server = http.createServer(async (req, res) => {
 
                 if (rawInputs && filterComplex && mappedVideo && mappedAudio) {
                     // 1. 최적의 안전 방식: -filter_complex_script 를 사용한 직접 spawn (Windows 쉘/따옴표 에러 100% 방지)
-                    const filterScriptContent = filterComplex.join(";\n");
+                    // 오디오 스트림이 없는 영상의 [i:a] 참조를 자동 무음 소스로 안전 치환
+                    const sanitizedFilter = await sanitizeFilterComplex(rawInputs, filterComplex, totalDuration);
+                    const filterScriptContent = sanitizedFilter.join(";\n");
                     fs.writeFileSync(tempFilterPath, filterScriptContent, 'utf8');
 
                     const args = ['-y'];
@@ -1207,7 +1381,7 @@ const server = http.createServer(async (req, res) => {
 
         let body = '';
         req.on('data', chunk => { body += chunk; });
-        req.on('end', () => {
+        req.on('end', async () => {
             let data;
             try {
                 data = JSON.parse(body);
@@ -1254,8 +1428,9 @@ const server = http.createServer(async (req, res) => {
                 return;
             }
 
+            const sanitizedFilter = await sanitizeFilterComplex(rawInputs, filterComplex, rangeDuration);
             startWebpExport({
-                rawInputs, filterComplex, mappedVideo, mappedAudio,
+                rawInputs, filterComplex: sanitizedFilter, mappedVideo, mappedAudio,
                 rangeStart, rangeDuration, fps,
                 targetBytes: Math.round(targetMB * 1024 * 1024),
                 outputWidth, outputHeight, outputFile: targetOutputFile,
@@ -1462,20 +1637,10 @@ const server = http.createServer(async (req, res) => {
             }
 
             const fullPath = targetFile ? path.resolve(ROOT_DIR, targetFile) : outputDir;
-            const targetDir = (fullPath && fs.existsSync(fullPath))
-                ? (fs.statSync(fullPath).isDirectory() ? fullPath : path.dirname(fullPath))
-                : outputDir;
-
-            if (!fs.existsSync(targetDir)) {
-                fs.mkdirSync(targetDir, { recursive: true });
-            }
-            console.log(`[LookVideoEditor] 저장 폴더 열기 실행: ${targetDir}`);
-
-            // Windows 탐색기에서 저장 폴더 바로 열기 (안정적 100% 보장)
-            spawn('explorer.exe', [targetDir], { detached: true, stdio: 'ignore' }).unref();
+            openExplorerPath(fullPath);
 
             res.writeHead(200, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify({ status: 'opened', path: targetDir }));
+            res.end(JSON.stringify({ status: 'opened', path: fullPath }));
         });
         return;
     }
@@ -2051,7 +2216,7 @@ const server = http.createServer(async (req, res) => {
                 const data = JSON.parse(body || '{}');
                 const filePath = data.path ? path.resolve(data.path) : null;
                 if (filePath && fs.existsSync(filePath)) {
-                    spawn('explorer.exe', [`/select,${filePath}`], { detached: true, stdio: 'ignore' }).unref();
+                    openExplorerPath(filePath);
                     res.writeHead(200, { 'Content-Type': 'application/json' });
                     res.end(JSON.stringify({ success: true, opened: filePath }));
                 } else {
@@ -2081,7 +2246,7 @@ const server = http.createServer(async (req, res) => {
                     }
                 }
                 if (folderPath && fs.existsSync(folderPath)) {
-                    spawn('explorer.exe', [folderPath], { detached: true, stdio: 'ignore' }).unref();
+                    openExplorerPath(folderPath);
                     res.writeHead(200, { 'Content-Type': 'application/json' });
                     res.end(JSON.stringify({ success: true, opened: folderPath }));
                 } else {
