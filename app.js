@@ -3162,23 +3162,24 @@ function clearTimeline() {
 function getProjectContentDuration() {
     if (!STATE.clips || STATE.clips.length === 0) return 0;
     
-    // 메인 비디오(Video 1) 및 PIP(Video 2) 끝점 우선 계산
-    // 자막(Overlay)이나 BGM(Audio)이 비디오보다 길어져 불필요한 검은 화면이 수 분간 렌더링되는 것을 방지
-    const videoClips = STATE.clips.filter(c => c.track === 'video1' || c.track === 'video2');
-    if (videoClips.length > 0) {
-        let maxVideoEnd = 0;
-        videoClips.forEach(c => {
-            const end = c.timelineStart + c.duration;
-            if (end > maxVideoEnd) maxVideoEnd = end;
+    // 시각적 트랙(Video 1, Video 2, Overlay 자막/이미지/비디오)의 최대 끝점 계산
+    // 자막이나 오버레이가 비디오 클립 뒤에 단독으로 나오는 아웃트로/엔딩 연출을 완벽 지원하며,
+    // BGM(Audio)이 시각 요소보다 길어져 불필요한 검은 화면이 수 분간 렌더링되는 것은 방지
+    const visualClips = STATE.clips.filter(c => c.track === 'video1' || c.track === 'video2' || c.track === 'overlay');
+    if (visualClips.length > 0) {
+        let maxVisualEnd = 0;
+        visualClips.forEach(c => {
+            const end = (Number(c.timelineStart) || 0) + (Number(c.duration) || 0);
+            if (end > maxVisualEnd) maxVisualEnd = end;
         });
-        if (maxVideoEnd > 0) {
-            return parseFloat(maxVideoEnd.toFixed(2));
+        if (maxVisualEnd > 0) {
+            return parseFloat(maxVisualEnd.toFixed(2));
         }
     }
 
     let maxEnd = 0;
     STATE.clips.forEach(c => {
-        const end = c.timelineStart + c.duration;
+        const end = (Number(c.timelineStart) || 0) + (Number(c.duration) || 0);
         if (end > maxEnd) maxEnd = end;
     });
     return parseFloat(maxEnd.toFixed(2));

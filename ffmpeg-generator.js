@@ -109,22 +109,20 @@ function generateFFmpegCommand(projectState) {
     }
 
     // 프로젝트 전체 실제 재생 길이 계산
-    // 메인 비디오 트랙(Video 1) 또는 PIP(Video 2)가 존재하면 비디오 종료 시점을 기준으로 제한하여
-    // 자막(Overlay)이나 BGM(Audio)이 실수로 비디오보다 길어져 뒤쪽에 검은 화면이 수 분간 렌더링되는 현상을 방지
-    let maxVideoEnd = 0;
-    video1Clips.forEach(c => {
-        const end = c.timelineStart + c.duration;
-        if (end > maxVideoEnd) maxVideoEnd = end;
-    });
-    video2Clips.forEach(c => {
-        const end = c.timelineStart + c.duration;
-        if (end > maxVideoEnd) maxVideoEnd = end;
+    // 시각적 트랙(Video 1, Video 2, Overlay 자막/이미지/비디오)의 최대 끝점 기준
+    // 영상이 끝난 후 자막만 나오는 구간(엔딩 카드 등)도 온전히 렌더링되도록 보장하고,
+    // BGM(Audio)이 실수로 시각 요소보다 길어져 뒤쪽에 불필요한 검은 화면이 수 분간 렌더링되는 현상을 방지
+    const visualClips = [video1Clips, video2Clips, overlayClips].flat();
+    let maxVisualEnd = 0;
+    visualClips.forEach(c => {
+        const end = (Number(c.timelineStart) || 0) + (Number(c.duration) || 0);
+        if (end > maxVisualEnd) maxVisualEnd = end;
     });
 
-    let projectDuration = maxVideoEnd > 0 ? maxVideoEnd : 0;
+    let projectDuration = maxVisualEnd > 0 ? maxVisualEnd : 0;
     if (projectDuration <= 0) {
         clips.forEach(c => {
-            const end = c.timelineStart + c.duration;
+            const end = (Number(c.timelineStart) || 0) + (Number(c.duration) || 0);
             if (end > projectDuration) projectDuration = end;
         });
     }
