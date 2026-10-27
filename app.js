@@ -19,8 +19,8 @@ const STATE = {
     isMuted: false,          // 프리뷰 음소거 상태
     lastAnimFrameId: null,   // requestAnimationFrame ID
     lastTimeUpdate: 0,       // 재생용 이전 타임스탬프
-    outputWidth: 1920,       // 최종 비디오 출력 가로 크기
-    outputHeight: 1080,      // 최종 비디오 출력 세로 크기
+    outputWidth: 1080,       // 최종 비디오 출력 가로 크기 (기본 9:16)
+    outputHeight: 1920,      // 최종 비디오 출력 세로 크기 (기본 9:16)
     outputFps: 30,           // 최종 비디오 출력 프레임 레이트
     encoder: 'h264_nvenc',   // 렌더링 인코더 (h264_nvenc: GPU, libx264: CPU)
 
@@ -353,8 +353,8 @@ function updatePreviewResolution() {
     if (DOM.projectResolution) {
         const resValue = DOM.projectResolution.value; // 예: "1920x1080", "1080x1920"
         const parts = resValue.split('x');
-        STATE.outputWidth = parseInt(parts[0]) || 1920;
-        STATE.outputHeight = parseInt(parts[1]) || 1080;
+        STATE.outputWidth = parseInt(parts[0]) || 1080;
+        STATE.outputHeight = parseInt(parts[1]) || 1920;
     }
     if (DOM.projectFps) {
         STATE.outputFps = parseInt(DOM.projectFps.value) || 30;
@@ -372,8 +372,11 @@ function updatePreviewResolution() {
     applyPreviewTransform();
 
     // 상단 및 타임라인 해상도 정보 뱃지 갱신
-    let aspectText = "16:9";
-    if (STATE.outputWidth === 1080 && STATE.outputHeight === 1920) aspectText = "세로 9:16";
+    let aspectText = "세로 9:16";
+    if (STATE.outputWidth === 1920 && STATE.outputHeight === 1080) aspectText = "16:9";
+    else if (STATE.outputWidth === 1280 && STATE.outputHeight === 720) aspectText = "HD 16:9";
+    else if (STATE.outputWidth === 640 && STATE.outputHeight === 360) aspectText = "SD 16:9";
+    else if (STATE.outputWidth === 1080 && STATE.outputHeight === 1920) aspectText = "세로 9:16";
     else if (STATE.outputWidth === STATE.outputHeight) aspectText = "1:1";
     
     if (DOM.previewBadgeText) {
@@ -2251,8 +2254,8 @@ function addTextOverlayClip() {
         textWeight: 'normal',
         textFont: defaultFont,
         textFontCustom: defaultFontCustom,
-        x: 640, // 가로 중앙 (1280x720 기준)
-        y: 600  // 하단
+        x: Math.round(STATE.outputWidth / 2) || 540, // 가로 중앙
+        y: Math.round(STATE.outputHeight * 0.85) || 1600  // 하단
     };
 
     STATE.clips.push(newClip);
@@ -6164,10 +6167,10 @@ function confirmNewProject() {
         DOM.hiddenPlayersContainer.innerHTML = '';
         Object.keys(activePlayers).forEach(k => delete activePlayers[k]);
         
-        STATE.outputWidth = 1920;
-        STATE.outputHeight = 1080;
+        STATE.outputWidth = 1080;
+        STATE.outputHeight = 1920;
         STATE.outputFps = 30;
-        if (DOM.projectResolution) DOM.projectResolution.value = "1920x1080";
+        if (DOM.projectResolution) DOM.projectResolution.value = "1080x1920";
         if (DOM.projectFps) DOM.projectFps.value = "30";
 
         // WebP 내보내기 설정도 초기화
@@ -6255,8 +6258,8 @@ function loadProjectFile(e) {
                 speed: c.speed || 1.0
             }));
             STATE.totalDuration = data.totalDuration || 30;
-            STATE.outputWidth = data.outputWidth || 1920;
-            STATE.outputHeight = data.outputHeight || 1080;
+            STATE.outputWidth = data.outputWidth || 1080;
+            STATE.outputHeight = data.outputHeight || 1920;
             STATE.outputFps = data.outputFps || 30;
             STATE.encoder = data.encoder || 'h264_nvenc';
 

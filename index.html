@@ -26,9 +26,9 @@
                 <div class="setting-field">
                     <label for="project-resolution"><i class="fa-solid fa-expand"></i> 해상도</label>
                     <select id="project-resolution" title="최종 동영상의 출력 해상도를 설정합니다.">
-                        <option value="1920x1080" selected>1920 x 1080 (FHD 16:9)</option>
+                        <option value="1080x1920" selected>1080 x 1920 (세로 9:16)</option>
+                        <option value="1920x1080">1920 x 1080 (FHD 16:9)</option>
                         <option value="1280x720">1280 x 720 (HD 16:9)</option>
-                        <option value="1080x1920">1080 x 1920 (세로 9:16)</option>
                         <option value="640x360">640 x 360 (SD 16:9)</option>
                     </select>
                 </div>
@@ -225,11 +225,11 @@
                     <div class="panel-header flex-header">
                         <h2><i class="fa-solid fa-play"></i> 실시간 브라우저 프리뷰</h2>
                         <div class="resolution-indicator" id="preview-resolution-badge">
-                            <i class="fa-solid fa-display"></i> <span id="preview-badge-text">1920 x 1080 (16:9)</span>
+                            <i class="fa-solid fa-display"></i> <span id="preview-badge-text">1080 x 1920 (세로 9:16)</span>
                         </div>
                     </div>
                     <div class="preview-canvas-wrapper" id="preview-canvas-wrapper">
-                        <canvas id="preview-canvas" width="1920" height="1080"></canvas>
+                        <canvas id="preview-canvas" width="1080" height="1920"></canvas>
                         <!-- 프리뷰 확대 배율 (확대 중일 때만 보이며, 클릭하면 원래 크기로) -->
                         <div class="preview-zoom-badge" id="preview-zoom-badge" title="클릭하면 원래 크기로 (캔버스 더블클릭도 동일)">
                             <i class="fa-solid fa-magnifying-glass-plus"></i>
@@ -660,7 +660,7 @@
                 <!-- 타임라인 지시부 (눈금자) -->
                 <div class="timeline-ruler-wrapper">
                     <div class="track-label-placeholder">
-                        <span id="timeline-fps-info"><i class="fa-solid fa-film"></i> 1920x1080 30fps</span>
+                        <span id="timeline-fps-info"><i class="fa-solid fa-film"></i> 1080x1920 30fps</span>
                     </div>
                     <canvas id="timeline-ruler" class="timeline-ruler"></canvas>
                 </div>
@@ -897,7 +897,7 @@
                 <div class="render-meta-grid" id="render-meta-grid">
                     <div class="meta-item">
                         <span class="meta-label">해상도</span>
-                        <span class="meta-value" id="render-meta-res">1920 x 1080</span>
+                        <span class="meta-value" id="render-meta-res">1080 x 1920</span>
                     </div>
                     <div class="meta-item">
                         <span class="meta-label">프레임레이트</span>

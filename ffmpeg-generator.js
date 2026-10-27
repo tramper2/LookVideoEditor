@@ -83,9 +83,9 @@ const TEXT_LINE_SPACING = 1.3;
 function generateFFmpegCommand(projectState) {
     const { clips, assets } = projectState;
     
-    // 사용자가 지정한 출력 해상도 및 FPS 설정 추출 (기본값: 1920x1080 30fps)
-    const outW = projectState.outputWidth || 1920;
-    const outH = projectState.outputHeight || 1080;
+    // 사용자가 지정한 출력 해상도 및 FPS 설정 추출 (기본값: 1080x1920 30fps)
+    const outW = projectState.outputWidth || 1080;
+    const outH = projectState.outputHeight || 1920;
     const outFPS = projectState.outputFps || 30;
     const encoder = projectState.encoder || 'h264_nvenc';
     
