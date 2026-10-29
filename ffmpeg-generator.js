@@ -555,11 +555,37 @@ function generateFFmpegCommand(projectState) {
         // 문자 효과 (외곽선 / 그림자)
         let textEffectOpts = '';
         const textEffect = clip.textEffect || 'none';
-        if (textEffect === 'outline') {
+        const hasOutline = textEffect === 'outline' || textEffect === 'outline_shadow' || textEffect === 'heavy_outline';
+        const hasShadow = textEffect === 'shadow' || textEffect === 'outline_shadow' || textEffect === 'glow';
+        const isGlow = textEffect === 'glow';
+
+        if (hasOutline) {
+            const defaultOutlineW = textEffect === 'heavy_outline' ? 8 : 4;
+            const rawOutlineW = clip.textOutlineWidth !== undefined ? clip.textOutlineWidth : defaultOutlineW;
+            const borderW = Math.max(1, Math.round(rawOutlineW * scale));
+            const borderColor = (clip.textOutlineColor || '#000000') + `@${opacityVal.toFixed(2)}`;
+            textEffectOpts += `:borderw=${borderW}:bordercolor=${borderColor}`;
+        }
+        if (hasShadow) {
+            const rawShadowOff = clip.textShadowOffset !== undefined ? clip.textShadowOffset : (isGlow ? 8 : 4);
+            if (isGlow) {
+                const glowW = Math.max(2, Math.round(rawShadowOff * 0.8 * scale));
+                const glowColor = (clip.textShadowColor || '#00e5ff') + '@0.85';
+                if (!hasOutline) {
+                    textEffectOpts += `:borderw=${glowW}:bordercolor=${glowColor}`;
+                }
+                textEffectOpts += `:shadowx=0:shadowy=0:shadowcolor=${glowColor}`;
+            } else {
+                const shadowOff = Math.max(1, Math.round(rawShadowOff * scale));
+                const shadowColor = (clip.textShadowColor || '#000000') + '@0.85';
+                textEffectOpts += `:shadowx=${shadowOff}:shadowy=${shadowOff}:shadowcolor=${shadowColor}`;
+            }
+        }
+        if (false && textEffect === 'outline') {
             textEffectOpts = ':borderw=3:bordercolor=black';
-        } else if (textEffect === 'shadow') {
+        } else if (false && textEffect === 'shadow') {
             textEffectOpts = ':shadowx=2:shadowy=2:shadowcolor=black@0.8';
-        } else if (textEffect === 'outline_shadow') {
+        } else if (false && textEffect === 'outline_shadow') {
             textEffectOpts = ':borderw=3:bordercolor=black:shadowx=2:shadowy=2:shadowcolor=black@0.8';
         }
 

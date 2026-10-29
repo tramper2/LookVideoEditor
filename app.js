@@ -165,6 +165,15 @@ const DOM = {
     propTextOpacityLabel: document.getElementById('prop-text-opacity-label'),
     propTextWeight: document.getElementById('prop-text-weight'),
     propTextEffect: document.getElementById('prop-text-effect'),
+    textEffectDetailSection: document.getElementById('text-effect-detail-section'),
+    textOutlineControls: document.getElementById('text-outline-controls'),
+    propTextOutlineColor: document.getElementById('prop-text-outline-color'),
+    propTextOutlineWidth: document.getElementById('prop-text-outline-width'),
+    propTextOutlineWidthLabel: document.getElementById('prop-text-outline-width-label'),
+    textShadowControls: document.getElementById('text-shadow-controls'),
+    propTextShadowColor: document.getElementById('prop-text-shadow-color'),
+    propTextShadowOffset: document.getElementById('prop-text-shadow-offset'),
+    propTextShadowOffsetLabel: document.getElementById('prop-text-shadow-offset-label'),
     propTextBgbox: document.getElementById('prop-text-bgbox'),
     propTextFont: document.getElementById('prop-text-font'),
     propTextFontCustomGroup: document.getElementById('prop-text-font-custom-group'),
@@ -892,6 +901,7 @@ function setupEventListeners() {
         DOM.propPipX, DOM.propPipY, DOM.propAudioVolume,
         DOM.propTextContent, DOM.propTextSize, DOM.propTextColor,
         DOM.propTextOpacity, DOM.propTextEffect, DOM.propTextBgbox, DOM.propTextWeight,
+        DOM.propTextOutlineColor, DOM.propTextOutlineWidth, DOM.propTextShadowColor, DOM.propTextShadowOffset,
         DOM.propTextFont, DOM.propTextFontCustom,
         DOM.propImgWidth, DOM.propImgHeight, DOM.propTextX, DOM.propTextY,
         DOM.propFadeOutDuration,
@@ -2249,13 +2259,17 @@ function addTextOverlayClip() {
         textSize: 44,
         textColor: '#ffffff',
         textOpacity: 100,
-        textEffect: 'none',
+        textEffect: 'outline_shadow',
+        textOutlineColor: '#000000',
+        textOutlineWidth: 4,
+        textShadowColor: '#000000',
+        textShadowOffset: 4,
         textBgbox: 'off',
         textWeight: 'normal',
         textFont: defaultFont,
         textFontCustom: defaultFontCustom,
-        x: Math.round(STATE.outputWidth / 2) || 540, // 가로 중앙
-        y: Math.round(STATE.outputHeight * 0.85) || 1600  // 하단
+        x: 640, // 가로 중앙 (1280x720 기준 좌표계, 640 = 중앙 정렬)
+        y: 600  // 하단 (1280x720 기준 좌표계, 600 = 하단 약 83% 지점)
     };
 
     STATE.clips.push(newClip);
@@ -2401,6 +2415,21 @@ function updateTimelineClipsUI() {
 }
 
 // 클립 선택
+function updateTextEffectDetailVisibility(effectType) {
+    if (!DOM.textEffectDetailSection) return;
+    const eff = effectType || 'none';
+    const hasOutline = eff === 'outline' || eff === 'outline_shadow' || eff === 'heavy_outline';
+    const hasShadow = eff === 'shadow' || eff === 'outline_shadow' || eff === 'glow';
+
+    if (!hasOutline && !hasShadow) {
+        DOM.textEffectDetailSection.classList.add('hide');
+    } else {
+        DOM.textEffectDetailSection.classList.remove('hide');
+        if (DOM.textOutlineControls) DOM.textOutlineControls.classList.toggle('hide', !hasOutline);
+        if (DOM.textShadowControls) DOM.textShadowControls.classList.toggle('hide', !hasShadow);
+    }
+}
+
 function selectClip(clipId) {
     STATE.selectedClipId = clipId;
     
@@ -2448,6 +2477,7 @@ function selectClip(clipId) {
     DOM.overlayPropertiesSection.classList.add('hide');
     DOM.pipPropertiesSection.classList.add('hide');
     DOM.textOverlaySection.classList.add('hide');
+    if (DOM.textEffectDetailSection) DOM.textEffectDetailSection.classList.add('hide');
     DOM.imageOverlaySection.classList.add('hide');
     if (DOM.chromakeyPropertiesSection) DOM.chromakeyPropertiesSection.classList.add('hide');
 
@@ -2549,7 +2579,21 @@ function selectClip(clipId) {
             DOM.propTextColor.value = clip.textColor || '#ffffff';
             DOM.propTextOpacity.value = clip.textOpacity !== undefined ? clip.textOpacity : 100;
             if (DOM.propTextOpacityLabel) DOM.propTextOpacityLabel.textContent = `${DOM.propTextOpacity.value}%`;
-            DOM.propTextEffect.value = clip.textEffect || 'none';
+            DOM.propTextEffect.value = clip.textEffect || 'outline_shadow';
+            const effVal = DOM.propTextEffect.value;
+            const defaultOutW = effVal === 'heavy_outline' ? 8 : 4;
+            const outWVal = clip.textOutlineWidth !== undefined ? clip.textOutlineWidth : defaultOutW;
+            const outColVal = clip.textOutlineColor || '#000000';
+            const shdOffVal = clip.textShadowOffset !== undefined ? clip.textShadowOffset : (effVal === 'glow' ? 8 : 4);
+            const shdColVal = clip.textShadowColor || (effVal === 'glow' ? '#00e5ff' : '#000000');
+
+            if (DOM.propTextOutlineColor) DOM.propTextOutlineColor.value = outColVal;
+            if (DOM.propTextOutlineWidth) DOM.propTextOutlineWidth.value = outWVal;
+            if (DOM.propTextOutlineWidthLabel) DOM.propTextOutlineWidthLabel.textContent = `${outWVal}px`;
+            if (DOM.propTextShadowColor) DOM.propTextShadowColor.value = shdColVal;
+            if (DOM.propTextShadowOffset) DOM.propTextShadowOffset.value = shdOffVal;
+            if (DOM.propTextShadowOffsetLabel) DOM.propTextShadowOffsetLabel.textContent = `${shdOffVal}px`;
+            updateTextEffectDetailVisibility(effVal);
             DOM.propTextBgbox.value = clip.textBgbox || 'off';
             DOM.propTextWeight.value = clip.textWeight || 'normal';
             
@@ -2710,7 +2754,39 @@ function updateSelectedClipFromInputs(e) {
             clip.textOpacity = isNaN(op) ? 100 : op;
             if (DOM.propTextOpacityLabel) DOM.propTextOpacityLabel.textContent = `${clip.textOpacity}%`;
         }
-        if (DOM.propTextEffect) clip.textEffect = DOM.propTextEffect.value;
+        if (DOM.propTextEffect) {
+            const prevEffect = clip.textEffect;
+            clip.textEffect = DOM.propTextEffect.value;
+            if (e && e.target === DOM.propTextEffect && prevEffect !== clip.textEffect) {
+                if (clip.textEffect === 'heavy_outline') {
+                    clip.textOutlineWidth = 8;
+                    if (DOM.propTextOutlineWidth) DOM.propTextOutlineWidth.value = 8;
+                } else if (clip.textEffect === 'outline' || clip.textEffect === 'outline_shadow') {
+                    if (prevEffect === 'heavy_outline' && clip.textOutlineWidth === 8) {
+                        clip.textOutlineWidth = 4;
+                        if (DOM.propTextOutlineWidth) DOM.propTextOutlineWidth.value = 4;
+                    }
+                } else if (clip.textEffect === 'glow') {
+                    if (!clip.textShadowColor || clip.textShadowColor === '#000000') {
+                        clip.textShadowColor = '#00e5ff';
+                        if (DOM.propTextShadowColor) DOM.propTextShadowColor.value = '#00e5ff';
+                    }
+                    clip.textShadowOffset = 8;
+                    if (DOM.propTextShadowOffset) DOM.propTextShadowOffset.value = 8;
+                }
+            }
+            updateTextEffectDetailVisibility(clip.textEffect);
+        }
+        if (DOM.propTextOutlineColor) clip.textOutlineColor = DOM.propTextOutlineColor.value;
+        if (DOM.propTextOutlineWidth) {
+            clip.textOutlineWidth = parseInt(DOM.propTextOutlineWidth.value) || 4;
+            if (DOM.propTextOutlineWidthLabel) DOM.propTextOutlineWidthLabel.textContent = `${clip.textOutlineWidth}px`;
+        }
+        if (DOM.propTextShadowColor) clip.textShadowColor = DOM.propTextShadowColor.value;
+        if (DOM.propTextShadowOffset) {
+            clip.textShadowOffset = parseInt(DOM.propTextShadowOffset.value) || 4;
+            if (DOM.propTextShadowOffsetLabel) DOM.propTextShadowOffsetLabel.textContent = `${clip.textShadowOffset}px`;
+        }
         if (DOM.propTextBgbox) clip.textBgbox = DOM.propTextBgbox.value;
         if (DOM.propTextWeight) clip.textWeight = DOM.propTextWeight.value;
         if (DOM.propTextFont) {
@@ -4443,11 +4519,27 @@ function renderPreview() {
             ctx.font = `${fontWeight} ${fontSize}px ${fontFamily}`;
 
             const textEffect = clip.textEffect || 'none';
-            const hasShadow = textEffect === 'shadow' || textEffect === 'outline_shadow';
-            const hasOutline = textEffect === 'outline' || textEffect === 'outline_shadow';
+            const hasOutline = textEffect === 'outline' || textEffect === 'outline_shadow' || textEffect === 'heavy_outline';
+            const hasShadow = textEffect === 'shadow' || textEffect === 'outline_shadow' || textEffect === 'glow';
+            const isGlow = textEffect === 'glow';
+
+            const outlineColor = clip.textOutlineColor || '#000000';
+            const defaultOutlineW = textEffect === 'heavy_outline' ? 8 : 4;
+            const outlineWidth = (clip.textOutlineWidth !== undefined ? clip.textOutlineWidth : defaultOutlineW) * scale;
+
+            const shadowColor = clip.textShadowColor || (isGlow ? '#00e5ff' : '#000000');
+            const shadowOffsetRaw = clip.textShadowOffset !== undefined ? clip.textShadowOffset : (isGlow ? 8 : 4);
+            const shadowOffset = (isGlow ? 0 : shadowOffsetRaw) * scale;
+            const shadowBlur = (isGlow ? Math.max(12, shadowOffsetRaw * 3) : Math.max(4, shadowOffsetRaw * 1.2)) * scale;
+            ctx.shadowColor = 'transparent';
+            ctx.shadowBlur = 0;
+            ctx.shadowOffsetX = 0;
+            ctx.shadowOffsetY = 0;
+
+
             if (hasShadow) {
-                ctx.shadowColor = 'rgba(0,0,0,0.8)';
-                ctx.shadowBlur = 6;
+                ctx.shadowColor = 'transparent';
+                ctx.shadowBlur = 0;
             } else {
                 ctx.shadowBlur = 0;
             }
@@ -4492,8 +4584,44 @@ function renderPreview() {
 
             lines.forEach((line, li) => {
                 const ly = lineY(li);
-                ctx.fillText(line, textX, ly);
-                if (hasOutline) ctx.strokeText(line, textX, ly);
+
+                if (hasOutline) {
+                    ctx.save();
+                    if (hasShadow) {
+                        ctx.shadowColor = hexToRgba(shadowColor, isGlow ? 95 : 85);
+                        ctx.shadowBlur = shadowBlur;
+                        ctx.shadowOffsetX = shadowOffset;
+                        ctx.shadowOffsetY = shadowOffset;
+                    }
+                    ctx.strokeStyle = hexToRgba(outlineColor, clip.textOpacity);
+                    ctx.lineWidth = Math.max(2, outlineWidth * 2);
+                    ctx.lineJoin = 'round';
+                    ctx.lineCap = 'round';
+                    ctx.miterLimit = 2;
+                    ctx.strokeText(line, textX, ly);
+                    ctx.restore();
+
+                    ctx.save();
+                    ctx.shadowColor = 'transparent';
+                    ctx.shadowBlur = 0;
+                    ctx.shadowOffsetX = 0;
+                    ctx.shadowOffsetY = 0;
+                    ctx.fillText(line, textX, ly);
+                    ctx.restore();
+                } else {
+                    ctx.save();
+                    if (hasShadow) {
+                        ctx.shadowColor = hexToRgba(shadowColor, isGlow ? 95 : 85);
+                        ctx.shadowBlur = shadowBlur;
+                        ctx.shadowOffsetX = shadowOffset;
+                        ctx.shadowOffsetY = shadowOffset;
+                        if (isGlow) {
+                            ctx.fillText(line, textX, ly);
+                        }
+                    }
+                    ctx.fillText(line, textX, ly);
+                    ctx.restore();
+                }
             });
 
             ctx.shadowBlur = 0;
